@@ -2,18 +2,52 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 
 	//"strconv"
 	"strings"
 )
 
+type NetAddress struct {
+	Host string
+	Port int
+}
+
+func (a NetAddress) String() string {
+	return "http://" + a.Host + ":" + strconv.Itoa(a.Port)
+}
+
+func (a *NetAddress) Set(s string) error {
+	hp := strings.Split(s, ":")
+	if len(hp) != 2 {
+		hp = strings.Split("localhost:8080/", ":")
+	}
+	port, err := strconv.Atoi(hp[1])
+	if err != nil {
+		return err
+	}
+	a.Host = hp[0]
+	a.Port = port
+	return nil
+}
+
 func main() {
-	endpoint := "http://localhost:8080/"
+	addr := new(NetAddress)
+	// если интерфейс не реализован,
+	// здесь будет ошибка компиляции
+	_ = flag.Value(addr)
+	// проверка реализации
+	flag.Var(addr, "addr", "Net address host:port")
+	flag.Parse()
+	fmt.Println(addr.Host)
+	fmt.Println(addr.Port)
+
 	// контейнер данных для запроса
 	data := url.Values{}
 	// приглашение в консоли
@@ -33,7 +67,7 @@ func main() {
 	// пишем запрос
 	// запрос методом POST должен, помимо заголовков, содержать тело
 	// тело должно быть источником потокового чтения io.Reader
-	request, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(data.Encode()))
+	request, err := http.NewRequest(http.MethodPost, addr.String(), strings.NewReader(data.Encode()))
 	if err != nil {
 		panic(err)
 	}
