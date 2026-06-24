@@ -3,36 +3,91 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/writer"
 )
 
 var (
-    a *string
-    width *int
-    thumb *bool
+	a     *string
+	width *int
+	thumb *bool
 )
 
 func init() {
-    // используем init-функцию
-    a = flag.String("a2", ":8080", "alisa port")
-    width = flag.Int("width", 1024, "width of the image")
-    thumb = flag.Bool("thumb", false, "create thumb")
+	// используем init-функцию
+	a = flag.String("a2", ":8080", "alisa port")
+	width = flag.Int("width", 1024, "width of the image")
+	thumb = flag.Bool("thumb", false, "create thumb")
+
+	// установим уровень логирования
+	logrus.SetLevel(logrus.TraceLevel)
+
+	// установим форматирование логов в джейсоне &logrus.JSONFormatter{}, или просто в тексте
+	logrus.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+	})
+
+	filePath := "logs/apim.log"
+	// 1. Создаем папки, если их нет
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		logrus.Fatal(err)
+	}
+
+	// установим вывод логов в файл
+	file, err := os.OpenFile("logs/apim.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		// Добавляем хук, который дублирует логи в файл
+		logrus.AddHook(&writer.Hook{
+			Writer: file,
+			LogLevels: []logrus.Level{
+				logrus.PanicLevel,
+				logrus.FatalLevel,
+				logrus.ErrorLevel,
+				logrus.WarnLevel,
+				logrus.InfoLevel,
+				//logrus.DebugLevel,
+				//logrus.TraceLevel,
+			},
+			// Устанавливаем JSON формат только для хука (файла)
+			//Formatter: &logrus.JSONFormatter{},
+		})
+		// MultiWriter это если без Hook. типа сразу в несколько мест одно и то же стримить.
+		//multiWriter := io.MultiWriter(os.Stdout, file)
+		//logrus.SetOutput(multiWriter)
+		logrus.Info("Удалось открыть файл логов!")
+	} else {
+		logrus.Info("Не удалось открыть файл логов, используется стандартный stderr")
+	}
+}
+
+func logo() {
+	//https://manytools.org/hacker-tools/ascii-banner/
+	logrus.Info(" ███   ███        ███   ███        ███   ███              ")
+	logrus.Info("█     █   █      █     █   █      █     █   █             ")
+	logrus.Info("█  ██ █   █ ████ █  ██ █   █ ████ █  ██ █   █             ")
+	logrus.Info("█   █ █   █      █   █ █   █      █   █ █   █  █   █   █  ")
+	logrus.Info(" ███   ███        ███   ███        ███   ███   █   █   █  ")
 }
 
 // функция main вызывается автоматически при запуске приложения
 func main() {
-    // обрабатываем аргументы командной строки
-    parseFlags()
-    fmt.Println("1 Running server on", flagRunAddr)
-    fmt.Println("2 Running server on", *a)
+	logo()
+
+	// обрабатываем аргументы командной строки
+	parseFlags()
+	logrus.Info("1 Running server on", flagRunAddr)
+	logrus.Info("2 Running server on", *a)
 
 	/*  good
 	if err := run(); err != nil {
@@ -59,7 +114,7 @@ func main() {
 	})
 	r.Post("/", webhook)
 
-	fmt.Println("Hello Alise, Go main function!")
+	logrus.Info("Hello Alise, Go main function!")
 	log.Fatal(http.ListenAndServe(flagRunAddr, r))
 }
 
@@ -72,7 +127,7 @@ func TimerTrace(next http.Handler) http.Handler {
 		// после завершения замеряем время выполнения запроса
 		duration := time.Since(start)
 		// сохраняем или сразу обрабатываем полученный результат
-		fmt.Println("TimerTrace... ", duration)
+		logrus.Info("TimerTrace... ", duration)
 	})
 }
 
@@ -99,7 +154,7 @@ func webhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer r.Body.Close()
-		fmt.Println("JSON: ", data)
+		logrus.Info("JSON: ", data)
 
 	case strings.Contains(contentType, "application/x-www-form-urlencoded"):
 		// Обработка form-urlencoded
@@ -107,7 +162,7 @@ func webhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid form", http.StatusBadRequest)
 			return
 		}
-		fmt.Println("Form: ", r.Form)
+		logrus.Info("Form: ", r.Form)
 
 	default:
 		// Обычный текст или raw данные
@@ -117,7 +172,7 @@ func webhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer r.Body.Close()
-		fmt.Println("Raw body: ", string(body))
+		logrus.Info("Raw body: ", string(body))
 	}
 
 	// установим правильный заголовок для типа данных
