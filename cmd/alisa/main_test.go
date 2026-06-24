@@ -7,12 +7,13 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/stretchr/testify/assert"
+	alise "study-go.ru/cho/eto/internal/handler"
 )
 
 func TestWebhook(t *testing.T) {
 	// тип http.HandlerFunc реализует интерфейс http.Handler
 	// это поможет передать хендлер тестовому серверу
-	handler := http.HandlerFunc(webhook)
+	handler := http.HandlerFunc(alise.Webhook)
 	// запускаем тестовый сервер, будет выбран первый свободный порт
 	srv := httptest.NewServer(handler)
 	// останавливаем сервер после завершения теста

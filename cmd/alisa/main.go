@@ -1,20 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/writer"
+
+	alise "study-go.ru/cho/eto/internal/handler"
 )
 
 var (
@@ -89,14 +88,6 @@ func main() {
 	logrus.Info("1 Running server on", flagRunAddr)
 	logrus.Info("2 Running server on", *a)
 
-	/*  good
-	if err := run(); err != nil {
-			panic(err)
-	}
-	*/
-	/*
-	   bad
-	*/
 	r := chi.NewRouter()
 	r.Use(TimerTrace)
 	r.Use(middleware.RealIP)
@@ -106,13 +97,13 @@ func main() {
 	// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
 
 	r.Route("/sex", func(r chi.Router) {
-		r.Get("/", webhook)
+		r.Get("/", alise.Webhook)
 		r.Route("/{pistols}", func(r chi.Router) {
-			r.Get("/", webhook)      // GET /cars/renault
-			r.Get("/{hoy}", webhook) // GET /cars/renault/duster
+			r.Get("/", alise.Webhook)      // GET /cars/renault
+			r.Get("/{hoy}", alise.Webhook) // GET /cars/renault/duster
 		})
 	})
-	r.Post("/", webhook)
+	r.Post("/", alise.Webhook)
 
 	logrus.Info("Hello Alise, Go main function!")
 	log.Fatal(http.ListenAndServe(flagRunAddr, r))
@@ -129,61 +120,4 @@ func TimerTrace(next http.Handler) http.Handler {
 		// сохраняем или сразу обрабатываем полученный результат
 		logrus.Info("TimerTrace... ", duration)
 	})
-}
-
-// функция run будет полезна при инициализации зависимостей сервера перед запуском
-func run() error {
-	return http.ListenAndServe(`:8080`, http.HandlerFunc(webhook))
-}
-
-// функция webhook —
-func webhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		// разрешаем только POST-запросы
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	contentType := r.Header.Get("Content-Type")
-
-	switch {
-	case strings.Contains(contentType, "application/json"):
-		// Обработка JSON
-		var data map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-		defer r.Body.Close()
-		logrus.Info("JSON: ", data)
-
-	case strings.Contains(contentType, "application/x-www-form-urlencoded"):
-		// Обработка form-urlencoded
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid form", http.StatusBadRequest)
-			return
-		}
-		logrus.Info("Form: ", r.Form)
-
-	default:
-		// Обычный текст или raw данные
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
-		defer r.Body.Close()
-		logrus.Info("Raw body: ", string(body))
-	}
-
-	// установим правильный заголовок для типа данных
-	w.Header().Set("Content-Type", "application/json")
-	// пока установим ответ-заглушку, без проверки ошибок
-	_, _ = w.Write([]byte(`
-      {
-        "response": {
-          "text": "Извините, я пока ничего не умею"
-        },
-        "version": "1.0"
-      }
-    `))
 }
