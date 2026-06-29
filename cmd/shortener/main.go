@@ -26,7 +26,7 @@ func (a NetAddress) String() string {
 func (a *NetAddress) Set(s string) error {
 	hp := strings.Split(s, ":")
 	if len(hp) != 2 {
-		hp = strings.Split("localhost:8080/", ":")
+		return fmt.Errorf("Нужен адрес:порт, недопустимое значение: n=%s", s)
 	}
 	port, err := strconv.Atoi(hp[1])
 	if err != nil {
