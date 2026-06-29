@@ -93,10 +93,10 @@ func main() {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RealIP)
-        r.Use(middleware.Logger)
-        r.Use(middleware.Recoverer)
-        // или
-        // r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	// или
+	// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
 
 	r.Post("/car", newCar)           // POST /car
 	r.Get("/car/{id}", getCar)       // GET /car/1234
@@ -117,15 +117,15 @@ func main() {
 }
 
 func TimerTrace(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // перед началом выполнения функции сохраняем текущее время
-        start := time.Now()
-        // вызываем следующий обработчик
-        next.ServeHTTP(w, r)
-        // после завершения замеряем время выполнения запроса
-        duration := time.Since(start)
-        log.Fatal(duration)
-        // сохраняем или сразу обрабатываем полученный результат
-        // ...
-    })
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// перед началом выполнения функции сохраняем текущее время
+		start := time.Now()
+		// вызываем следующий обработчик
+		next.ServeHTTP(w, r)
+		// после завершения замеряем время выполнения запроса
+		duration := time.Since(start)
+		log.Fatal(duration)
+		// сохраняем или сразу обрабатываем полученный результат
+		// ...
+	})
 }

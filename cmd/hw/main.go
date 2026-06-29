@@ -62,5 +62,3 @@ func GetAnyClient(url string) {
 	io.Copy(os.Stdout, response.Body)
 	response.Body.Close()
 }
-
-
