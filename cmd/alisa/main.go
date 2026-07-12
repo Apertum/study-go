@@ -2,16 +2,19 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/writer"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	alise "study-go.ru/cho/eto/internal/handler"
 )
@@ -31,43 +34,83 @@ func init() {
 	// установим уровень логирования
 	logrus.SetLevel(logrus.TraceLevel)
 
-	// установим форматирование логов в джейсоне &logrus.JSONFormatter{}, или просто в тексте
-	logrus.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
+	// установим форматирование логов для консоли: 2026-07-12T12:00:00Z [info] "msg"
+	logrus.SetFormatter(&consoleFormatter{})
+
+	logFile := "logs/apim.log"
+	// 1. Создаем папку для логов, если её нет
+	if err := filepath.Walk(filepath.Dir("./logs"), func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.MkdirAll(path, 0755)
+		}
+		return nil
+	}); err != nil {
+		logrus.WithError(err).Fatal("Не удалось создать директорию для логов")
+	}
+
+	// 2. Настраиваем lumberjack для ротации логов (лимит 10MB на файл)
+	logger := &lumberjack.Logger{
+		Filename:   logFile,
+		MaxSize:    10, // максимум 10 МБ на файл
+		MaxAge:     7, // хранить до 7 старых файлов
+		Compress:   true, // сжимать старые файлы
+		LocalTime:  true, // использовать локальное время в именах
+	}
+	if err := logger.Close(); err != nil {
+		logrus.WithError(err).Warn("Ошибка при инициализации lumberjack")
+	}
+
+	// 3. Добавляем хук, который дублирует логи в файл с ротацией в JSON формате
+	logrus.AddHook(&jsonFileHook{
+		Writer: logger,
+		LogLevels: []logrus.Level{
+			logrus.PanicLevel,
+			logrus.FatalLevel,
+			logrus.ErrorLevel,
+			logrus.WarnLevel,
+			logrus.InfoLevel,
+			//logrus.DebugLevel,
+			//logrus.TraceLevel,
+		},
 	})
+	logrus.Info("Удалось настроить файл логов с ротацией (10MB limit)!")
+}
 
-	filePath := "logs/apim.log"
-	// 1. Создаем папки, если их нет
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		logrus.Fatal(err)
-	}
+// consoleFormatter — форматер для консоли: 2026-07-12T12:00:00Z [info] "msg"
+type consoleFormatter struct{}
 
-	// установим вывод логов в файл
-	file, err := os.OpenFile("logs/apim.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		// Добавляем хук, который дублирует логи в файл
-		logrus.AddHook(&writer.Hook{
-			Writer: file,
-			LogLevels: []logrus.Level{
-				logrus.PanicLevel,
-				logrus.FatalLevel,
-				logrus.ErrorLevel,
-				logrus.WarnLevel,
-				logrus.InfoLevel,
-				//logrus.DebugLevel,
-				//logrus.TraceLevel,
-			},
-			// Устанавливаем JSON формат только для хука (файла)
-			//Formatter: &logrus.JSONFormatter{},
-		})
-		// MultiWriter это если без Hook. типа сразу в несколько мест одно и то же стримить.
-		//multiWriter := io.MultiWriter(os.Stdout, file)
-		//logrus.SetOutput(multiWriter)
-		logrus.Info("Удалось открыть файл логов!")
-	} else {
-		logrus.Info("Не удалось открыть файл логов, используется стандартный stderr")
+func (f *consoleFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	level := entry.Level
+	levelStr := level.String()
+	if levelStr == "" {
+		levelStr = "info"
 	}
+	msg := entry.Message
+	timestamp := entry.Time.Format("02.01_15:04:05.000")
+	return []byte(fmt.Sprintf("%s [%s] \"%s\"\n", timestamp, string(unicode.ToUpper([]rune(levelStr)[0])), msg)), nil
+}
+
+// jsonFileHook — хук для logrus, который пишет логи в файл в JSON формате
+type jsonFileHook struct {
+	Writer    io.Writer
+	LogLevels []logrus.Level
+}
+
+func (h *jsonFileHook) Levels() []logrus.Level {
+	return h.LogLevels
+}
+
+func (h *jsonFileHook) Fire(entry *logrus.Entry) error {
+	formatter := &logrus.JSONFormatter{}
+	bytes, err := formatter.Format(entry)
+	if err != nil {
+		return err
+	}
+	_, err = h.Writer.Write(bytes)
+	return err
 }
 
 func logo() {
@@ -85,8 +128,8 @@ func main() {
 
 	// обрабатываем аргументы командной строки
 	parseFlags()
-	logrus.Info("1 Running server on", flagRunAddr)
-	logrus.Info("2 Running server on", *a)
+	logrus.Debug("1 Running server on", flagRunAddr)
+	logrus.Trace("2 Running server on", *a)
 
 	r := chi.NewRouter()
 	r.Use(TimerTrace)
