@@ -12,11 +12,18 @@ import (
 
 	//"strconv"
 	"strings"
+
+	"github.com/sirupsen/logrus"
+	config "study-go.ru/cho/eto/internal/config"
 )
 
 type NetAddress struct {
 	Host string
 	Port int
+}
+
+func init() {
+	config.LogsInit()
 }
 
 func (a NetAddress) String() string {
@@ -45,13 +52,13 @@ func main() {
 	// проверка реализации
 	flag.Var(addr, "addr", "Net address host:port")
 	flag.Parse()
-	fmt.Println(addr.Host)
-	fmt.Println(addr.Port)
+	logrus.Debug(addr.Host)
+	logrus.Debug(addr.Port)
 
 	// контейнер данных для запроса
 	data := url.Values{}
 	// приглашение в консоли
-	fmt.Println("Введите длинный URL")
+	fmt.Print("Введите длинный URL: ")
 	// открываем потоковое чтение из консоли
 	reader := bufio.NewReader(os.Stdin)
 	// читаем строку из консоли
@@ -79,7 +86,7 @@ func main() {
 		panic(err)
 	}
 	// выводим код ответа
-	fmt.Println("Статус-код ", response.Status)
+	logrus.Info("Статус-код ", response.Status)
 	defer response.Body.Close()
 	// читаем поток из тела ответа
 	body, err := io.ReadAll(response.Body)
@@ -87,5 +94,5 @@ func main() {
 		panic(err)
 	}
 	// и печатаем его
-	fmt.Println(string(body))
+	logrus.Info(string(body))
 }

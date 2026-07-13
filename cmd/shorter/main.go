@@ -26,7 +26,7 @@ func main() {
 
 	r := chi.NewRouter()
 	// глобальные middleware
-	r.Use(middleware.RealIP)
+	r.Use(middleware.ClientIPFromRemoteAddr)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// регистрация обработчиков
