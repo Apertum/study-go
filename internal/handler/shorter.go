@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"sync"
+
+	"study-go.ru/cho/eto/internal/config"
 )
 
 // хранилище ссылок в памяти (ключ — короткий ID, значение — оригинальный URL)
@@ -19,7 +21,7 @@ var (
 func generateID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return config.BaseUrl + hex.EncodeToString(b)
 }
 
 // ShorterPost — обработчик POST /
