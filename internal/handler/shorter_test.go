@@ -46,9 +46,9 @@ func TestShorterPostAndGet(t *testing.T) {
 		require.NoError(t, err)
 
 		// проверяем, что ID сгенерирован и URL совпадает
-		id, ok := result["id"]
-		assert.True(t, ok, "expected 'id' field in response")
-		assert.NotEmpty(t, id, "id should not be empty")
+		res, ok := result["result"]
+		assert.True(t, ok, "expected 'result' field in response")
+		assert.NotEmpty(t, res, "'result' should not be empty")
 
 		url, ok := result["url"]
 		assert.True(t, ok, "expected 'url' field in response")
@@ -63,7 +63,7 @@ func TestShorterPostAndGet(t *testing.T) {
 				},
 			}
 
-			getResp, err := client.Get(srv.URL + "/" + id)
+			getResp, err := client.Get(srv.URL + "/" + res)
 			require.NoError(t, err)
 			defer getResp.Body.Close()
 
@@ -93,7 +93,7 @@ func TestShorterPostJSON(t *testing.T) {
 	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result["id"])
+	assert.NotEmpty(t, result["result"])
 	assert.Equal(t, "https://example.com/from-json", result["url"])
 }
 
@@ -129,7 +129,7 @@ func TestShorterPostEmptyBody(t *testing.T) {
 	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result["id"])
+	assert.NotEmpty(t, result["result"])
 	// url должен быть пустым, т.к. body был пустой
 	assert.Equal(t, "", result["url"])
 }
@@ -152,10 +152,10 @@ func TestShorterMultipleIDs(t *testing.T) {
 
 		var result map[string]string
 		json.Unmarshal(body, &result)
-		id := result["id"]
+		res := result["result"]
 
-		_, exists := ids[id]
-		assert.False(t, exists, "ID %s уже используется", id)
-		ids[id] = struct{}{}
+		_, exists := ids[res]
+		assert.False(t, exists, "ID %s уже используется", res)
+		ids[res] = struct{}{}
 	}
 }

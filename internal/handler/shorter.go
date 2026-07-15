@@ -49,16 +49,16 @@ func ShorterPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// генерируем ID и сохраняем
-	id := generateID()
+	result := generateID()
 
 	mu.Lock()
-	store[id] = longURL
+	store[result] = longURL
 	mu.Unlock()
 
 	// возвращаем короткий ID
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"id":  id,
+		"result":  result,
 		"url": longURL,
 	})
 }

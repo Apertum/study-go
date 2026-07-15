@@ -31,6 +31,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	// регистрация обработчиков
 	r.Post("/", handler.ShorterPost)
+	r.Post("/api/shorten", handler.ShorterPost)
 	r.Get("/{id}", handler.ShorterGet)
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
