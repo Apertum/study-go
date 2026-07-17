@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +14,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"study-go.ru/cho/eto/internal/middleware"
 )
 
 // setupShorterRouter создаёт chi-роутер с зарегистрированными обработчиками shorter
 func setupShorterRouter() http.Handler {
 	r := chi.NewRouter()
+	r.Use(middleware.GzipMiddleware)
 	r.Post("/", ShorterPost)
 	r.Get("/{id}", ShorterGet)
 	return r
@@ -132,6 +137,83 @@ func TestShorterPostEmptyBody(t *testing.T) {
 	assert.NotEmpty(t, result["result"])
 	// url должен быть пустым, т.к. body был пустой
 	assert.Equal(t, "", result["url"])
+}
+
+func TestShorterPostGzip(t *testing.T) {
+	router := setupShorterRouter()
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// Сжимаем тело запроса в gzip
+	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened"
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write([]byte(longURL))
+	require.NoError(t, err)
+	err = gw.Close()
+	require.NoError(t, err)
+
+	// POST со сжатым телом и заголовком Content-Encoding: gzip
+	req, err := http.NewRequest("POST", srv.URL+"/", &buf)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Encoding", "gzip")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var result map[string]string
+	err = json.Unmarshal(body, &result)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, result["result"])
+	assert.Equal(t, longURL, result["url"])
+}
+
+// TestShorterGetGzip проверяет редирект при запросе со сжатием
+func TestShorterGetGzip(t *testing.T) {
+	router := setupShorterRouter()
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened"
+
+	// POST — создаём короткую ссылку
+	resp, err := http.Post(srv.URL+"/", "text/plain", strings.NewReader(longURL))
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	var created map[string]string
+	err = json.Unmarshal(body, &created)
+	require.NoError(t, err)
+	shortID := created["result"]
+
+	// GET с заголовком Accept-Encoding: gzip — ждём сжатый ответ
+	req, err := http.NewRequest("GET", srv.URL+"/"+shortID, nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	getResp, err := client.Do(req)
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+
+	// Ответ должен быть редиректом, а не сжатым контентом
+	assert.Equal(t, http.StatusTemporaryRedirect, getResp.StatusCode)
+	assert.Equal(t, longURL, getResp.Header.Get("Location"))
 }
 
 // TestShorterMultipleIDs проверяет, что каждый POST генерирует уникальный ID

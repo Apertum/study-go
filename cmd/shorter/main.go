@@ -6,9 +6,10 @@ import (
 
 	config "study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/handler"
+	internalMiddleware "study-go.ru/cho/eto/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,9 +27,10 @@ func main() {
 
 	r := chi.NewRouter()
 	// глобальные middleware
-	r.Use(middleware.ClientIPFromRemoteAddr)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	r.Use(chimw.ClientIPFromRemoteAddr)
+	r.Use(chimw.Logger)
+	r.Use(chimw.Recoverer)
+	r.Use(internalMiddleware.GzipMiddleware)
 	// регистрация обработчиков
 	r.Post("/", handler.ShorterPost)
 	r.Post("/api/shorten", handler.ShorterPost)
