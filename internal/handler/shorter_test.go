@@ -16,14 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"study-go.ru/cho/eto/internal/middleware"
+	"study-go.ru/cho/eto/internal/storage"
 )
 
 // setupShorterRouter создаёт chi-роутер с зарегистрированными обработчиками shorter
 func setupShorterRouter() http.Handler {
+	return setupShorterRouterWithStorage(storage.New("test_data.json"))
+}
+
+// setupShorterRouterWithStorage создаёт chi-роутер с переданным storage
+func setupShorterRouterWithStorage(s *storage.Storage) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.GzipMiddleware)
-	r.Post("/", ShorterPost)
-	r.Get("/{id}", ShorterGet)
+	r.Post("/", ShorterPost(s))
+	r.Get("/{id}", ShorterGet(s))
 	return r
 }
 

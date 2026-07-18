@@ -7,6 +7,7 @@ import (
 	config "study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/handler"
 	internalMiddleware "study-go.ru/cho/eto/internal/middleware"
+	"study-go.ru/cho/eto/internal/storage"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -20,10 +21,13 @@ func init() {
 
 func main() {
 	logrus.Info(`
-╔══════════════════════════════╗
-║        short-short           ║
-╚══════════════════════════════╝
+╔═══════════════════════════════╗
+║        short-short F          ║
+╚═══════════════════════════════╝
     `)
+
+	// загружаем данные из файла (если существует)
+	store := storage.New(config.FileName)
 
 	r := chi.NewRouter()
 	// глобальные middleware
@@ -32,9 +36,9 @@ func main() {
 	r.Use(chimw.Recoverer)
 	r.Use(internalMiddleware.GzipMiddleware)
 	// регистрация обработчиков
-	r.Post("/", handler.ShorterPost)
-	r.Post("/api/shorten", handler.ShorterPost)
-	r.Get("/{id}", handler.ShorterGet)
+	r.Post("/", handler.ShorterPost(store))
+	r.Post("/api/shorten", handler.ShorterPost(store))
+	r.Get("/{id}", handler.ShorterGet(store))
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseUrl)
