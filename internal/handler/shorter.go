@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"study-go.ru/cho/eto/internal/config"
@@ -55,13 +56,16 @@ func ShorterPost(w http.ResponseWriter, r *http.Request) {
 	store[result] = longURL
 	mu.Unlock()
 
+    id++
 	// возвращаем короткий ID
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"result":  result,
-		"url": longURL,
+		"uuid":  strconv.Itoa(id),
+		"short_url":  result,
+		"original_url": longURL,
 	})
 }
+var id int = 0
 
 // ShorterGet — обработчик GET /{id}
 // Возвращает оригинальный URL по короткому ID

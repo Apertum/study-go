@@ -10,6 +10,7 @@ import (
 // экспортированная переменная
 var BaseUrl string
 var Addr string
+var FileName string = "dataNN.json"
 
 // ParseFlags обрабатывает аргументы командной строки
 // и сохраняет их значения в соответствующих переменных
@@ -19,6 +20,7 @@ func ParseFlags() {
 	// как аргумент -a со значением :8080 по умолчанию
 	flag.StringVar(&Addr, "a", ":8080", "адрес HTTP-сервера")
 	flag.StringVar(&BaseUrl, "b", "http://short.ru/", "base url")
+	flag.StringVar(&FileName, "f", "data.json", "history file")
 	// парсим переданные серверу аргументы в зарегистрированные переменные
 	flag.Parse()
 
@@ -27,6 +29,10 @@ func ParseFlags() {
 	// даже если он был передан через аргумент командной строки
 	if envRunAddr := os.Getenv("SERVER_ADDRESS"); envRunAddr != "" {
 		Addr = envRunAddr
+	}
+
+	if env := os.Getenv("FILE_STORAGE_PATH"); env != "" {
+		FileName = env
 	}
 
 	// для случаев, когда в переменной окружения RUN_ADDR присутствует непустое значение,

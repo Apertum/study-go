@@ -51,11 +51,11 @@ func TestShorterPostAndGet(t *testing.T) {
 		require.NoError(t, err)
 
 		// проверяем, что ID сгенерирован и URL совпадает
-		res, ok := result["result"]
+		res, ok := result["short_url"]
 		assert.True(t, ok, "expected 'result' field in response")
 		assert.NotEmpty(t, res, "'result' should not be empty")
 
-		url, ok := result["url"]
+		url, ok := result["original_url"]
 		assert.True(t, ok, "expected 'url' field in response")
 		assert.Equal(t, longURL, url)
 
@@ -98,8 +98,8 @@ func TestShorterPostJSON(t *testing.T) {
 	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result["result"])
-	assert.Equal(t, "https://example.com/from-json", result["url"])
+	assert.NotEmpty(t, result["short_url"])
+	assert.Equal(t, "https://example.com/from-json", result["original_url"])
 }
 
 func TestShorterGetNotFound(t *testing.T) {
@@ -134,9 +134,9 @@ func TestShorterPostEmptyBody(t *testing.T) {
 	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result["result"])
+	assert.NotEmpty(t, result["short_url"])
 	// url должен быть пустым, т.к. body был пустой
-	assert.Equal(t, "", result["url"])
+	assert.Equal(t, "", result["original_url"])
 }
 
 func TestShorterPostGzip(t *testing.T) {
@@ -172,8 +172,8 @@ func TestShorterPostGzip(t *testing.T) {
 	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result["result"])
-	assert.Equal(t, longURL, result["url"])
+	assert.NotEmpty(t, result["short_url"])
+	assert.Equal(t, longURL, result["original_url"])
 }
 
 // TestShorterGetGzip проверяет редирект при запросе со сжатием
@@ -194,7 +194,7 @@ func TestShorterGetGzip(t *testing.T) {
 	var created map[string]string
 	err = json.Unmarshal(body, &created)
 	require.NoError(t, err)
-	shortID := created["result"]
+	shortID := created["short_url"]
 
 	// GET с заголовком Accept-Encoding: gzip — ждём сжатый ответ
 	req, err := http.NewRequest("GET", srv.URL+"/"+shortID, nil)
@@ -234,7 +234,7 @@ func TestShorterMultipleIDs(t *testing.T) {
 
 		var result map[string]string
 		json.Unmarshal(body, &result)
-		res := result["result"]
+		res := result["short_url"]
 
 		_, exists := ids[res]
 		assert.False(t, exists, "ID %s уже используется", res)
