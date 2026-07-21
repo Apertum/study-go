@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"strconv"
 
 	"github.com/sirupsen/logrus"
 )
@@ -60,7 +61,12 @@ func (s *Storage) load() {
 	for _, e := range entries {
 		s.store[e.ShortURL] = e.OriginalURL
 		s.ids[e.UUID] = e.ShortURL
-		id, _ := parseInt(e.UUID)
+		// Парсим строку в int
+        id, err := strconv.Atoi(e.UUID)
+        if err != nil {
+            fmt.Println("Штош. Ошибка при парсинге:", err)
+            return
+        }
 		if id >= s.nextID {
 			s.nextID = id + 1
 		}
@@ -129,24 +135,4 @@ func (s *Storage) NextID() string {
 	id := s.nextID
 	s.nextID++
 	return fmt.Sprintf("%d", id)
-}
-
-// parseInt парсит int из строки.
-func parseInt(s string) (int, error) {
-	result := 0
-	negative := false
-	for _, c := range s {
-		if c == '-' {
-			negative = true
-			continue
-		}
-		if c < '0' || c > '9' {
-			return 0, os.ErrInvalid
-		}
-		result = result*10 + int(c-'0')
-	}
-	if negative {
-		return -result, nil
-	}
-	return result, nil
 }

@@ -15,7 +15,7 @@ import (
 func generateID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
-	return config.BaseUrl + hex.EncodeToString(b)
+	return hex.EncodeToString(b)
 }
 
 // ShorterPost — обработчик POST /
@@ -44,13 +44,17 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 		}
 
 		// генерируем ID и сохраняем
-		shortID := generateID()
+		shortID := config.BaseURL + generateID()
 		uuid := s.NextID()
 
 		s.Put(uuid, shortID, longURL)
 
 		// возвращаем короткий ID
 		w.Header().Set("Content-Type", "application/json")
+		// Порядок важен: WriteHeader отправляет заголовки клиенту.
+		// Если вызвать w.Write() раньше, Go автоматически отправит код 200 OK, и изменить его на 201 уже не получится.
+		// можно вызвать только один раз за один
+		w.WriteHeader(http.StatusCreated) // Возвращает статус 201
 		json.NewEncoder(w).Encode(map[string]string{
 			"uuid":         uuid,
 			"short_url":    shortID,

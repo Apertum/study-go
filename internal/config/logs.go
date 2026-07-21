@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"unicode"
 
 	"github.com/sirupsen/logrus"
@@ -21,15 +20,8 @@ func LogsInit() {
 
 	logFile := "logs/app.log"
 	// 1. Создаем папку для логов, если её нет
-	if err := filepath.Walk(filepath.Dir("./logs"), func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return os.MkdirAll(path, 0755)
-		}
-		return nil
-	}); err != nil {
+	err := os.MkdirAll("./logs", 0755)
+    if err != nil {
 		logrus.WithError(err).Fatal("Не удалось создать директорию для логов")
 	}
 

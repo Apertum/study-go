@@ -8,7 +8,7 @@ import (
 )
 
 // экспортированная переменная
-var BaseUrl string
+var BaseURL string
 var Addr string
 var FileName string = "dataNN.json"
 
@@ -19,7 +19,7 @@ func ParseFlags() {
 	logrus.Info("Start ParseFlags")
 	// как аргумент -a со значением :8080 по умолчанию
 	flag.StringVar(&Addr, "a", ":8080", "адрес HTTP-сервера")
-	flag.StringVar(&BaseUrl, "b", "http://short.ru/", "base url")
+	flag.StringVar(&BaseURL, "b", "http://short.ru/", "base url")
 	flag.StringVar(&FileName, "f", "data.json", "history file")
 	// парсим переданные серверу аргументы в зарегистрированные переменные
 	flag.Parse()
@@ -35,12 +35,12 @@ func ParseFlags() {
 		FileName = env
 	}
 
-	// для случаев, когда в переменной окружения RUN_ADDR присутствует непустое значение,
+	// для случаев, когда в переменной окружения BASE_URL присутствует непустое значение,
 	// переопределим адрес запуска сервера,
 	// даже если он был передан через аргумент командной строки
-	if base := os.Getenv("RUN_ADDR"); base != "" {
-		BaseUrl = base
+	if base := os.Getenv("BASE_URL"); base != "" {
+		BaseURL = base
 	}
 	logrus.Info("Read addr: ", Addr)
-	logrus.Info("Read base: ", BaseUrl)
+	logrus.Info("Read base: ", BaseURL)
 }

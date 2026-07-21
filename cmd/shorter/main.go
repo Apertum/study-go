@@ -41,6 +41,6 @@ func main() {
 	r.Get("/{id}", handler.ShorterGet(store))
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
-	logrus.Debug("Base url: ", config.BaseUrl)
+	logrus.Debug("Base url: ", config.BaseURL)
 	log.Fatal(http.ListenAndServe(config.Addr, r))
 }
