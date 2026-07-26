@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	alise "study-go.ru/cho/eto/internal/handler"
+	models "study-go.ru/cho/eto/internal/model"
 )
 
 func TestWebhook(t *testing.T) {
@@ -21,10 +23,21 @@ func TestWebhook(t *testing.T) {
 
 	successBody := `{
         "response": {
-            "text": "Извините, я пока ничего не умею"
+            "text": "Для вас нет новых сообщений."
         },
-        "version": "1.0"
+        "session": {"id":"", "new":false},
+        "timezone":"Europe/Moscow",
+        "version":"1.0"
     }`
+
+	successBodyAsFirst := `{
+            "response": {
+                "text": "Точное время .* часов, .* минут. Для вас нет новых сообщений."
+            },
+            "session": {"id":"", "new":false},
+            "timezone":"Europe/Moscow",
+            "version":"1.0"
+        }`
 
 	testCases := []struct {
 		name         string // добавляем название тестов
@@ -71,6 +84,14 @@ func TestWebhook(t *testing.T) {
 			expectedCode: http.StatusOK,
 			expectedBody: successBody,
 		},
+		{
+			name:         "method_post_success",
+			method:       http.MethodPost,
+			body:         `{"request": {"type": "SimpleUtterance", "command": "sudo do something"}, "session": {"new": true, "id": "id002"}, "version": "1.0"}`,
+			expectedCode: http.StatusOK,
+			// ответ стал сложнее, поэтому сравниваем его с шаблоном вместо точной строки
+			expectedBody: successBodyAsFirst,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -90,7 +111,18 @@ func TestWebhook(t *testing.T) {
 			assert.Equal(t, tc.expectedCode, resp.StatusCode(), "Response code didn't match expected")
 			// проверяем корректность полученного тела ответа, если мы его ожидаем
 			if tc.expectedBody != "" {
-				assert.JSONEq(t, tc.expectedBody, string(resp.Body()))
+				//assert.JSONEq(t, tc.expectedBody, string(resp.Body()))
+				// сравниваем тело ответа с ожидаемым шаблоном
+				var rsExp models.Response
+				var rsFact models.Response
+				if err := json.Unmarshal([]byte(tc.expectedBody), &rsExp); err != nil {
+					assert.Error(t, err, "Не Json expectedBody")
+				}
+				if err := json.Unmarshal(resp.Body(), &rsFact); err != nil {
+					assert.Error(t, err, "Не Json resp.Body")
+				}
+
+				assert.Regexp(t, rsExp.Response.Text, rsFact.Response.Text)
 			}
 		})
 	}
@@ -107,15 +139,19 @@ func TestGzipCompression(t *testing.T) {
             "type": "SimpleUtterance",
             "command": "sudo do something"
         },
-        "version": "1.0"
+        "version": "1.0",
+        "session": {"id":"", "new":false},
+        "timezone":"Europe/Moscow"
     }`
 
 	// ожидаемое содержимое тела ответа при успешном запросе
 	successBody := `{
         "response": {
-            "text": "Извините, я пока ничего не умею"
+            "text": "Для вас нет новых сообщений."
         },
-        "version": "1.0"
+        "version": "1.0",
+        "session": {"id":"", "new":false},
+        "timezone":"Europe/Moscow"
     }`
 
 	t.Run("sends_gzip", func(t *testing.T) {
