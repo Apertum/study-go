@@ -2,11 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 
@@ -54,8 +54,6 @@ func main() {
 	logrus.Debug(addr.Host)
 	logrus.Debug(addr.Port)
 
-	// контейнер данных для запроса
-	data := url.Values{}
 	// приглашение в консоли
 	fmt.Print("Введите длинный URL: ")
 	// открываем потоковое чтение из консоли
@@ -66,19 +64,30 @@ func main() {
 		panic(err)
 	}
 	long = strings.TrimSuffix(long, "\n")
+
+	// контейнер данных для запроса
+	var req struct {
+		URL string `json:"url"`
+	}
 	// заполняем контейнер данными
-	data.Set("url", long)
+	req.URL = long
+	data, err := json.Marshal(req)
+	if err != nil {
+		logrus.WithError(err).Error("Ошибка сериализации данных запроса")
+		panic(err)
+	}
+
 	// добавляем HTTP-клиент
 	client := &http.Client{}
 	// пишем запрос
 	// запрос методом POST должен, помимо заголовков, содержать тело
 	// тело должно быть источником потокового чтения io.Reader
-	request, err := http.NewRequest(http.MethodPost, addr.String(), strings.NewReader(data.Encode()))
+	request, err := http.NewRequest(http.MethodPost, addr.String(), strings.NewReader(string(data)))
 	if err != nil {
 		panic(err)
 	}
 	// в заголовках запроса указываем кодировку
-	request.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Add("Content-Type", "application/json")
 	// отправляем запрос и получаем ответ
 	response, err := client.Do(request)
 	if err != nil {

@@ -2,6 +2,7 @@
 -- Создание таблицы фильмов
 CREATE TABLE url_srv (
     id SERIAL PRIMARY KEY,
-    origin text NOT NULL,
-    short text NOT NULL
+    uuid INT NOT NULL,
+    original_url text NOT NULL,
+    short_url text NOT NULL
 );

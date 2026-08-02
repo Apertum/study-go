@@ -1,23 +1,27 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
 	"strconv"
+	"sync"
 
 	"github.com/sirupsen/logrus"
+	"study-go.ru/cho/eto/internal/config"
+
+	_ "github.com/lib/pq"
 )
 
 // Entry — одна запись URL-сокращения.
 type Entry struct {
-	UUID       string `json:"uuid"`
-	ShortURL   string `json:"short_url"`
+	UUID        string `json:"uuid"`
+	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
 }
 
-// Storage управляет in-memory хранилищем и синхронизацией с файлом.
+// Storage управляет in-memory хранилищем и синхронизацией с файлом или БД.
 type Storage struct {
 	mu     sync.Mutex
 	store  map[string]string // shortID -> originalURL
@@ -25,9 +29,15 @@ type Storage struct {
 	nextID int
 	path   string
 	fileMu sync.Mutex
+
+	db    *sql.DB
+	useDB bool
 }
 
-// New создаёт Storage и загружает данные из файла (если он существует). Метод к структуре типа ООП.
+// New создаёт Storage.
+// Если DATABASE_DSN указан и подключение к PostgreSQL успешно,
+// используются только данные из таблицы url_srv (файл не используется).
+// В противном случае используется файловое хранилище.
 func New(filePath string) *Storage {
 	s := &Storage{
 		store:  make(map[string]string),
@@ -35,8 +45,57 @@ func New(filePath string) *Storage {
 		nextID: 0,
 		path:   filePath,
 	}
+
+	if config.DatabaseDSN != "" {
+		db, err := sql.Open("postgres", config.DatabaseDSN)
+		if err != nil {
+			logrus.WithError(err).Warn("Не удалось открыть подключение к PostgreSQL, используется файловое хранилище")
+		} else if err := db.Ping(); err != nil {
+			db.Close()
+			logrus.WithError(err).Warn("Не удалось подключиться к PostgreSQL, используется файловое хранилище")
+		} else {
+			logrus.Info("Подключение к PostgreSQL успешно, используется база данных")
+			s.db = db
+			s.useDB = true
+			s.loadFromDB()
+			return s
+		}
+	}
+
 	s.load()
 	return s
+}
+
+// loadFromDB читает все записи из url_srv и восстанавливает in-memory состояние.
+func (s *Storage) loadFromDB() {
+	rows, err := s.db.Query("SELECT id, uuid, original_url, short_url FROM url_srv")
+	if err != nil {
+		logrus.WithError(err).Error("Ошибка чтения таблицы url_srv")
+		return
+	}
+	defer rows.Close()
+
+	s.mu.Lock()
+	for rows.Next() {
+		var id int
+		var uuid, originalURL, shortURL string
+		if err := rows.Scan(&id, &uuid, &originalURL, &shortURL); err != nil {
+			logrus.WithError(err).Error("Ошибка сканирования строки url_srv")
+			continue
+		}
+		s.store[shortURL] = originalURL
+		s.ids[uuid] = shortURL
+		if id >= s.nextID {
+			s.nextID = id + 1
+		}
+	}
+	s.mu.Unlock()
+
+	if err := rows.Err(); err != nil {
+		logrus.WithError(err).Error("Ошибка при итерации по строкам url_srv")
+	}
+
+	logrus.Info("Загружено записей из БД: ", len(s.ids))
 }
 
 // load читает файл и восстанавливает in-memory состояние.
@@ -61,12 +120,11 @@ func (s *Storage) load() {
 	for _, e := range entries {
 		s.store[e.ShortURL] = e.OriginalURL
 		s.ids[e.UUID] = e.ShortURL
-		// Парсим строку в int
-        id, err := strconv.Atoi(e.UUID)
-        if err != nil {
-            fmt.Println("Штош. Ошибка при парсинге:", err)
-            return
-        }
+		id, err := strconv.Atoi(e.UUID)
+		if err != nil {
+			fmt.Println("Штош. Ошибка при парсинге:", err)
+			return
+		}
 		if id >= s.nextID {
 			s.nextID = id + 1
 		}
@@ -78,23 +136,23 @@ func (s *Storage) load() {
 
 // save записывает все данные в файл (атомарно через temp-file + rename).
 func (s *Storage) save() {
-	s.fileMu.Lock() // это мне подсказали
+	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
 
 	s.mu.Lock()
 	entries := make([]Entry, 0, len(s.store))
 	for uuid, shortURL := range s.ids {
 		entries = append(entries, Entry{
-			UUID:       uuid,
-			ShortURL:   shortURL,
+			UUID:        uuid,
+			ShortURL:    shortURL,
 			OriginalURL: s.store[shortURL],
 		})
 	}
 	s.mu.Unlock()
 
 	tmp := s.path + ".tmp"
-	data, err := json.Marshal(entries) // странно сортирует. надо бы сортирнуть по id руками
-	if err != nil { // if-программирование, бесит
+	data, err := json.Marshal(entries)
+	if err != nil {
 		logrus.WithError(err).Error("Ошибка сериализации данных")
 		return
 	}
@@ -110,14 +168,31 @@ func (s *Storage) save() {
 	}
 }
 
-// Put сохраняет новую запись и сразу сохраняет на диск.
+// saveToDB сохраняет запись в таблицу url_srv.
+func (s *Storage) saveToDB(uuid, shortURL, originalURL string) {
+	logrus.Debug("(uuid, original_url, short_url): " + uuid + " / " + originalURL + " // " + shortURL)
+	_, err := s.db.Exec(
+		"INSERT INTO url_srv (uuid, original_url, short_url) VALUES ($1, $2, $3)",
+		uuid, originalURL, shortURL,
+	)
+	if err != nil {
+		logrus.Error(err)
+		logrus.WithError(err).Error("Ошибка записи в url_srv ")
+	}
+}
+
+// Put сохраняет новую запись и сразу сохраняет на диск/в БД.
 func (s *Storage) Put(uuid, shortID, originalURL string) {
 	s.mu.Lock()
 	s.store[shortID] = originalURL
 	s.ids[uuid] = shortID
 	s.mu.Unlock()
 
-	s.save()
+	if s.useDB {
+		s.saveToDB(uuid, shortID, originalURL)
+	} else {
+		s.save()
+	}
 }
 
 // Get возвращает оригинальный URL по короткому ID.
