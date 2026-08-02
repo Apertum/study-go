@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
+
+	_ "github.com/lib/pq"
 )
 
 // generateID создаёт случайный короткий ID
@@ -77,5 +80,31 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 
 		// перенаправляем на оригинальный URL
 		http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
+	}
+}
+
+// ShorterPing — обработчик GET /ping
+// Проверяет соединение с PostgreSQL базой данных
+func ShorterPing() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if config.DatabaseDSN == "" {
+			http.Error(w, "DATABASE_DSN not configured", http.StatusInternalServerError)
+			return
+		}
+
+		db, err := sql.Open("postgres", config.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Failed to open database", http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		if err := db.Ping(); err != nil {
+			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
 	}
 }

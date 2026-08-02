@@ -140,7 +140,7 @@ func TestGzipCompression(t *testing.T) {
             "command": "sudo do something"
         },
         "version": "1.0",
-        "session": {"id":"", "new":false},
+        "session": {"id":"", "new":false, "user":{"user_id":""}},
         "timezone":"Europe/Moscow"
     }`
 
@@ -150,7 +150,7 @@ func TestGzipCompression(t *testing.T) {
             "text": "Для вас нет новых сообщений."
         },
         "version": "1.0",
-        "session": {"id":"", "new":false},
+        "session": {"id":"", "new":false, "user":{"user_id":""}},
         "timezone":"Europe/Moscow"
     }`
 

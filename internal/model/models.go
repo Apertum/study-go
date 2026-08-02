@@ -30,8 +30,14 @@ type Response struct {
 
 // Session описывает данные о сессии пользователя.
 type Session struct {
-	ID  string `json:"id"`
-	New bool   `json:"new"`
+	ID   string      `json:"id"`
+	New  bool        `json:"new"`
+	User RequestUser `json:"user"`
+}
+
+// RequestUser содержит данные об авторизованном пользователе навыка
+type RequestUser struct {
+	UserID string `json:"user_id"`
 }
 
 // ResponsePayload описывает ответ, который нужно озвучить.

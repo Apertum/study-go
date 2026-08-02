@@ -51,6 +51,39 @@ func main() {
 	logrus.Debug("1 Running server on ", flagRunAddr)
 	logrus.Trace("2 Running server on ", *a)
 
+	if 1 == 1 {
+		run()
+	} else {
+
+		r := chi.NewRouter()
+		// оборачиваем хендлер webhook в middleware с логированием и поддержкой gzip
+		r.Use(gzipMiddleware)
+		r.Use(TimerTrace)
+		r.Use(middleware.ClientIPFromRemoteAddr)
+		r.Use(middleware.Logger)
+		r.Use(middleware.Recoverer)
+		// или
+		// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
+
+		r.Route("/sex", func(r chi.Router) {
+			r.Get("/", alise.Webhook)
+			r.Route("/{pistols}", func(r chi.Router) {
+				r.Get("/", alise.Webhook)      // GET /cars/renault
+				r.Get("/{hoy}", alise.Webhook) // GET /cars/renault/duster
+			})
+		})
+		r.Post("/", alise.Webhook)
+
+		logrus.Info("Hello Alise, Go main function!")
+		log.Fatal(http.ListenAndServe(flagRunAddr, r))
+	}
+}
+
+func run() error {
+
+	// создаём экземпляр приложения, пока без внешней зависимости хранилища сообщений
+	appInstance := alise.NewApp(nil)
+
 	r := chi.NewRouter()
 	// оборачиваем хендлер webhook в middleware с логированием и поддержкой gzip
 	r.Use(gzipMiddleware)
@@ -62,16 +95,17 @@ func main() {
 	// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
 
 	r.Route("/sex", func(r chi.Router) {
-		r.Get("/", alise.Webhook)
+		r.Get("/", appInstance.WebhookApp)
 		r.Route("/{pistols}", func(r chi.Router) {
-			r.Get("/", alise.Webhook)      // GET /cars/renault
-			r.Get("/{hoy}", alise.Webhook) // GET /cars/renault/duster
+			r.Get("/", appInstance.WebhookApp)      // GET /cars/renault
+			r.Get("/{hoy}", appInstance.WebhookApp) // GET /cars/renault/duster
 		})
 	})
-	r.Post("/", alise.Webhook)
+	r.Post("/", appInstance.WebhookApp)
 
 	logrus.Info("Hello Alise, Go main function!")
 	log.Fatal(http.ListenAndServe(flagRunAddr, r))
+	return nil
 }
 
 func TimerTrace(next http.Handler) http.Handler {
@@ -190,39 +224,39 @@ func (c *compressReader) Close() error {
 }
 
 func gzipMiddlewareForTest(h http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        // по умолчанию устанавливаем оригинальный http.ResponseWriter как тот,
-        // который будем передавать следующей функции
-        ow := w
+	return func(w http.ResponseWriter, r *http.Request) {
+		// по умолчанию устанавливаем оригинальный http.ResponseWriter как тот,
+		// который будем передавать следующей функции
+		ow := w
 
-        // проверяем, что клиент умеет получать от сервера сжатые данные в формате gzip
-        acceptEncoding := r.Header.Get("Accept-Encoding")
-        supportsGzip := strings.Contains(acceptEncoding, "gzip")
-        if supportsGzip {
-            // оборачиваем оригинальный http.ResponseWriter новым с поддержкой сжатия
-            cw := newCompressWriter(w)
-            // меняем оригинальный http.ResponseWriter на новый
-            ow = cw
-            // не забываем отправить клиенту все сжатые данные после завершения middleware
-            defer cw.Close()
-        }
+		// проверяем, что клиент умеет получать от сервера сжатые данные в формате gzip
+		acceptEncoding := r.Header.Get("Accept-Encoding")
+		supportsGzip := strings.Contains(acceptEncoding, "gzip")
+		if supportsGzip {
+			// оборачиваем оригинальный http.ResponseWriter новым с поддержкой сжатия
+			cw := newCompressWriter(w)
+			// меняем оригинальный http.ResponseWriter на новый
+			ow = cw
+			// не забываем отправить клиенту все сжатые данные после завершения middleware
+			defer cw.Close()
+		}
 
-        // проверяем, что клиент отправил серверу сжатые данные в формате gzip
-        contentEncoding := r.Header.Get("Content-Encoding")
-        sendsGzip := strings.Contains(contentEncoding, "gzip")
-        if sendsGzip {
-            // оборачиваем тело запроса в io.Reader с поддержкой декомпрессии
-            cr, err := newCompressReader(r.Body)
-            if err != nil {
-                w.WriteHeader(http.StatusInternalServerError)
-                return
-            }
-            // меняем тело запроса на новое
-            r.Body = cr
-            defer cr.Close()
-        }
+		// проверяем, что клиент отправил серверу сжатые данные в формате gzip
+		contentEncoding := r.Header.Get("Content-Encoding")
+		sendsGzip := strings.Contains(contentEncoding, "gzip")
+		if sendsGzip {
+			// оборачиваем тело запроса в io.Reader с поддержкой декомпрессии
+			cr, err := newCompressReader(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			// меняем тело запроса на новое
+			r.Body = cr
+			defer cr.Close()
+		}
 
-        // передаём управление хендлеру
-        h.ServeHTTP(ow, r)
-    }
+		// передаём управление хендлеру
+		h.ServeHTTP(ow, r)
+	}
 }

@@ -39,6 +39,7 @@ func main() {
 	r.Post("/", handler.ShorterPost(store))
 	r.Post("/api/shorten", handler.ShorterPost(store))
 	r.Get("/{id}", handler.ShorterGet(store))
+	r.Get("/ping", handler.ShorterPing())
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

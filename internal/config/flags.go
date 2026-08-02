@@ -11,6 +11,7 @@ import (
 var BaseURL string
 var Addr string
 var FileName string = "dataNN.json"
+var DatabaseDSN string
 
 // ParseFlags обрабатывает аргументы командной строки
 // и сохраняет их значения в соответствующих переменных
@@ -21,6 +22,7 @@ func ParseFlags() {
 	flag.StringVar(&Addr, "a", ":8080", "адрес HTTP-сервера")
 	flag.StringVar(&BaseURL, "b", "http://short.ru/", "base url")
 	flag.StringVar(&FileName, "f", "data.json", "history file")
+	flag.StringVar(&DatabaseDSN, "d", "", "DSN для подключения к PostgreSQL")
 	// парсим переданные серверу аргументы в зарегистрированные переменные
 	flag.Parse()
 
@@ -41,6 +43,10 @@ func ParseFlags() {
 	if base := os.Getenv("BASE_URL"); base != "" {
 		BaseURL = base
 	}
+	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
+		DatabaseDSN = envDSN
+	}
 	logrus.Info("Read addr: ", Addr)
 	logrus.Info("Read base: ", BaseURL)
+	logrus.Info("DSN для подключения к PostgreSQL: ", DatabaseDSN)
 }
