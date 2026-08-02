@@ -66,6 +66,51 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 	}
 }
 
+// ShorterBatchPost — обработчик POST /api/shorten/batch
+func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var reqs []struct {
+			CorrelationID string `json:"correlation_id"`
+			URL           string `json:"url"`
+		}
+		if err := json.Unmarshal(body, &reqs); err != nil {
+			http.Error(w, "Failed to parse request body", http.StatusBadRequest)
+			return
+		}
+
+		type ResponseItem struct {
+			CorrelationID string `json:"correlation_id"`
+			UUID          string `json:"uuid"`
+			ShortURL      string `json:"short_url"`
+			OriginalURL   string `json:"original_url"`
+		}
+
+		responses := make([]ResponseItem, 0, len(reqs))
+		for _, req := range reqs {
+			shortID := config.BaseURL + generateID()
+			uuid := s.NextID()
+			s.Put(uuid, shortID, req.URL)
+			responses = append(responses, ResponseItem{
+				CorrelationID: req.CorrelationID,
+				UUID:          uuid,
+				ShortURL:      shortID,
+				OriginalURL:   req.URL,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(responses)
+	}
+}
+
 // ShorterGet — обработчик GET /{id}
 // Возвращает оригинальный URL по короткому ID
 func ShorterGet(s *storage.Storage) http.HandlerFunc {

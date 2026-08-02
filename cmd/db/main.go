@@ -50,7 +50,7 @@ func main() {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		panic(err)
 	} else {
-		fmt.Printf("%s | %d | %t \r\n", title, likes, comdis)
+		fmt.Printf("%s | %d | %t \r\n", title, *likes, *comdis)
 	}
 
 	var list []Video
