@@ -1,17 +1,16 @@
 package handler
 
 import (
-	"database/sql"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 
+	"github.com/lib/pq"
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
-
-	_ "github.com/lib/pq"
 )
 
 // generateID создаёт случайный короткий ID
@@ -50,7 +49,22 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 		shortID := config.BaseURL + generateID()
 		uuid := s.NextID()
 
-		s.Put(uuid, shortID, longURL)
+		err = s.PutUnique(uuid, shortID, longURL)
+		if err != nil {
+			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { //  а как ещё
+				if existingShortURL, exists := s.GetByOriginalURL(longURL); exists {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					json.NewEncoder(w).Encode(map[string]string{
+						"short_url":    existingShortURL,
+						"original_url": longURL,
+					})
+					return
+				}
+			}
+			http.Error(w, "Failed to save", http.StatusConflict)
+			return
+		}
 
 		// возвращаем короткий ID
 		w.Header().Set("Content-Type", "application/json")
@@ -96,7 +110,31 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 		for _, req := range reqs {
 			shortID := config.BaseURL + generateID()
 			uuid := s.NextID()
-			s.Put(uuid, shortID, req.URL)
+
+			err := s.PutUnique(uuid, shortID, req.URL)
+			if err != nil {
+				if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { //  а как ещё
+					if existingShortURL, exists := s.GetByOriginalURL(req.URL); exists {
+						responses = append(responses, ResponseItem{
+							CorrelationID: req.CorrelationID,
+							UUID:          uuid,
+							ShortURL:      existingShortURL,
+							OriginalURL:   req.URL,
+						})
+						http.Error(w, "Failed to save1", http.StatusConflict)
+						continue
+					}
+				}
+				responses = append(responses, ResponseItem{
+					CorrelationID: req.CorrelationID,
+					UUID:          uuid,
+					ShortURL:      shortID,
+					OriginalURL:   req.URL,
+				})
+				http.Error(w, "Failed to save2", http.StatusConflict)
+				continue
+			}
+
 			responses = append(responses, ResponseItem{
 				CorrelationID: req.CorrelationID,
 				UUID:          uuid,

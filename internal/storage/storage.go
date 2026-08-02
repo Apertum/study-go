@@ -169,16 +169,16 @@ func (s *Storage) save() {
 }
 
 // saveToDB сохраняет запись в таблицу url_srv.
-func (s *Storage) saveToDB(uuid, shortURL, originalURL string) {
+func (s *Storage) saveToDB(uuid, shortURL, originalURL string) error {
 	logrus.Debug("(uuid, original_url, short_url): " + uuid + " / " + originalURL + " // " + shortURL)
 	_, err := s.db.Exec(
 		"INSERT INTO url_srv (uuid, original_url, short_url) VALUES ($1, $2, $3)",
 		uuid, originalURL, shortURL,
 	)
 	if err != nil {
-		logrus.Error(err)
-		logrus.WithError(err).Error("Ошибка записи в url_srv ")
+		return err
 	}
+	return nil
 }
 
 // Put сохраняет новую запись и сразу сохраняет на диск/в БД.
@@ -189,10 +189,35 @@ func (s *Storage) Put(uuid, shortID, originalURL string) {
 	s.mu.Unlock()
 
 	if s.useDB {
-		s.saveToDB(uuid, shortID, originalURL)
+		_ = s.saveToDB(uuid, shortID, originalURL)
 	} else {
 		s.save()
 	}
+}
+
+// PutUnique сохраняет новую запись, возвращая ошибку pq.Error при дубликате original_url.
+func (s *Storage) PutUnique(uuid, shortID, originalURL string) error {
+	s.mu.Lock()
+	s.store[shortID] = originalURL
+	s.ids[uuid] = shortID
+	s.mu.Unlock()
+
+	if s.useDB {
+		return s.saveToDB(uuid, shortID, originalURL)
+	}
+	return nil
+}
+
+// GetByOriginalURL возвращает short_url для заданного original_url.
+func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for shortURL, url := range s.store {
+		if url == originalURL {
+			return shortURL, true
+		}
+	}
+	return "", false
 }
 
 // Get возвращает оригинальный URL по короткому ID.
