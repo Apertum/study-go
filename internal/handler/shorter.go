@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/lib/pq"
+	"github.com/sirupsen/logrus"
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
 )
@@ -122,17 +125,20 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 							OriginalURL:   req.URL,
 						})
 						http.Error(w, "Failed to save1", http.StatusConflict)
-						continue
+					} else {
+						responses = append(responses, ResponseItem{
+							CorrelationID: req.CorrelationID,
+							UUID:          uuid,
+							ShortURL:      shortID,
+							OriginalURL:   req.URL,
+						})
+						http.Error(w, "Failed to save2", http.StatusInternalServerError)
 					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(responses)
+					logrus.Error("Случилась ошибка", err)
+					return // Выход из функции здесь
 				}
-				responses = append(responses, ResponseItem{
-					CorrelationID: req.CorrelationID,
-					UUID:          uuid,
-					ShortURL:      shortID,
-					OriginalURL:   req.URL,
-				})
-				http.Error(w, "Failed to save2", http.StatusConflict)
-				continue
 			}
 
 			responses = append(responses, ResponseItem{
@@ -168,22 +174,20 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 
 // ShorterPing — обработчик GET /ping
 // Проверяет соединение с PostgreSQL базой данных
-func ShorterPing() http.HandlerFunc {
+func ShorterPing(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if config.DatabaseDSN == "" {
-			http.Error(w, "DATABASE_DSN not configured", http.StatusInternalServerError)
+		if db == nil {
+			http.Error(w, "DATABASE is not configured", http.StatusInternalServerError)
 			return
 		}
 
-		db, err := sql.Open("postgres", config.DatabaseDSN)
-		if err != nil {
-			http.Error(w, "Failed to open database", http.StatusInternalServerError)
-			return
-		}
-		defer db.Close()
+		// PingContext с таймаутом для контроля времени ответа
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
 
-		if err := db.Ping(); err != nil {
-			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+		if err := db.PingContext(ctx); err != nil {
+			logrus.Warn("К БД неконект: ", err)
+			http.Error(w, "К БД неконект: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 

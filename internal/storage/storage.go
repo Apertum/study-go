@@ -11,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"study-go.ru/cho/eto/internal/config"
 
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
@@ -135,11 +136,24 @@ func (s *Storage) load() {
 }
 
 // save записывает все данные в файл (атомарно через temp-file + rename).
-func (s *Storage) save() {
+func (s *Storage) save(uuid, shortURL, originalURL string) error {
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
 
+	for _, val := range s.store {
+		if val == originalURL {
+			logrus.Error("DOUBLE: " + originalURL)
+			// небольшой хак. Возвращаем указатель на структуру pq.Error с нужным кодом
+			return &pq.Error{
+				Code:    "23505",
+				Message: "unique_violation: url already exists",
+			}
+		}
+	}
+
 	s.mu.Lock()
+	s.store[shortURL] = originalURL
+	s.ids[uuid] = shortURL
 	entries := make([]Entry, 0, len(s.store))
 	for uuid, shortURL := range s.ids {
 		entries = append(entries, Entry{
@@ -154,18 +168,19 @@ func (s *Storage) save() {
 	data, err := json.Marshal(entries)
 	if err != nil {
 		logrus.WithError(err).Error("Ошибка сериализации данных")
-		return
+		return err
 	}
 
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		logrus.WithError(err).Error("Ошибка записи temp-файла")
-		return
+		return err
 	}
 
 	if err := os.Rename(tmp, s.path); err != nil {
 		logrus.WithError(err).Error("Ошибка переименования temp-файла")
-		return
+		return err
 	}
+	return nil
 }
 
 // saveToDB сохраняет запись в таблицу url_srv.
@@ -181,31 +196,13 @@ func (s *Storage) saveToDB(uuid, shortURL, originalURL string) error {
 	return nil
 }
 
-// Put сохраняет новую запись и сразу сохраняет на диск/в БД.
-func (s *Storage) Put(uuid, shortID, originalURL string) {
-	s.mu.Lock()
-	s.store[shortID] = originalURL
-	s.ids[uuid] = shortID
-	s.mu.Unlock()
-
-	if s.useDB {
-		_ = s.saveToDB(uuid, shortID, originalURL)
-	} else {
-		s.save()
-	}
-}
-
 // PutUnique сохраняет новую запись, возвращая ошибку pq.Error при дубликате original_url.
-func (s *Storage) PutUnique(uuid, shortID, originalURL string) error {
-	s.mu.Lock()
-	s.store[shortID] = originalURL
-	s.ids[uuid] = shortID
-	s.mu.Unlock()
-
+func (s *Storage) PutUnique(uuid, shortURL, originalURL string) error {
 	if s.useDB {
-		return s.saveToDB(uuid, shortID, originalURL)
+		return s.saveToDB(uuid, shortURL, originalURL)
+	} else {
+		return s.save(uuid, shortURL, originalURL)
 	}
-	return nil
 }
 
 // GetByOriginalURL возвращает short_url для заданного original_url.

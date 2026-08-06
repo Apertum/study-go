@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -51,32 +50,8 @@ func main() {
 	logrus.Debug("1 Running server on ", flagRunAddr)
 	logrus.Trace("2 Running server on ", *a)
 
-	if 1 == 1 {
-		run()
-	} else {
-
-		r := chi.NewRouter()
-		// оборачиваем хендлер webhook в middleware с логированием и поддержкой gzip
-		r.Use(gzipMiddleware)
-		r.Use(TimerTrace)
-		r.Use(middleware.ClientIPFromRemoteAddr)
-		r.Use(middleware.Logger)
-		r.Use(middleware.Recoverer)
-		// или
-		// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
-
-		r.Route("/sex", func(r chi.Router) {
-			r.Get("/", alise.Webhook)
-			r.Route("/{pistols}", func(r chi.Router) {
-				r.Get("/", alise.Webhook)      // GET /cars/renault
-				r.Get("/{hoy}", alise.Webhook) // GET /cars/renault/duster
-			})
-		})
-		r.Post("/", alise.Webhook)
-
-		logrus.Info("Hello Alise, Go main function!")
-		log.Fatal(http.ListenAndServe(flagRunAddr, r))
-	}
+	run()
+	logrus.Fatal("Конец всему!")
 }
 
 func run() error {
@@ -104,7 +79,7 @@ func run() error {
 	r.Post("/", appInstance.WebhookApp)
 
 	logrus.Info("Hello Alise, Go main function!")
-	log.Fatal(http.ListenAndServe(flagRunAddr, r))
+	http.ListenAndServe(flagRunAddr, r)
 	return nil
 }
 
