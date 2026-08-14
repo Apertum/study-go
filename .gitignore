@@ -33,3 +33,9 @@ go.work.sum
 /*.patch
 *.log
 /.*/
+/internal/handler/test_data.json
+/cmd/shorter/data.json
+/postgres_data
+
+/insert.sql
+/USvideos.csv

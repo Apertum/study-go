@@ -8,16 +8,35 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"study-go.ru/cho/eto/internal/middleware"
 	"study-go.ru/cho/eto/internal/storage"
 )
+
+func TestMain(m *testing.M) {
+	// 1. Пытаемся удалить файл перед старте тестов
+	err := os.Remove("test_data.json")
+
+	// Если файла нет, os.Remove вернет ошибку os.ErrNotExist.
+	// Игнорируем её, но логируем другие потенциальные проблемы (например, права доступа)
+	if err != nil && !os.IsNotExist(err) {
+		logrus.Printf("Не удалось удалить test_data.json при старте: %v", err)
+	}
+
+	// 2. Запускаем сами тесты пакета и сохраняем код возврата
+	exitCode := m.Run()
+
+	// 3. Завершаем процесс тестов с правильным кодом (0 - успех, >0 - падение)
+	os.Exit(exitCode)
+}
 
 // setupShorterRouter создаёт chi-роутер с зарегистрированными обработчиками shorter
 func setupShorterRouter() http.Handler {
@@ -39,7 +58,7 @@ func TestShorterPostAndGet(t *testing.T) {
 	defer srv.Close()
 
 	// тестовые URL для сокращения
-	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened"
+	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened/" + generateID()
 
 	// POST — создание короткой ссылки
 	t.Run("POST creates short link", func(t *testing.T) {
@@ -89,8 +108,9 @@ func TestShorterPostJSON(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
+	var suff string = generateID()
 	// POST с JSON
-	jsonBody := `{"url":"https://example.com/from-json"}`
+	jsonBody := `{"url":"https://example.com/from-json/` + suff + `"}`
 	resp, err := http.Post(srv.URL+"/", "application/json", strings.NewReader(jsonBody))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -105,7 +125,7 @@ func TestShorterPostJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, result["short_url"])
-	assert.Equal(t, "https://example.com/from-json", result["original_url"])
+	assert.Equal(t, "https://example.com/from-json/"+suff, result["original_url"])
 }
 
 func TestShorterGetNotFound(t *testing.T) {
@@ -143,6 +163,13 @@ func TestShorterPostEmptyBody(t *testing.T) {
 	assert.NotEmpty(t, result["short_url"])
 	// url должен быть пустым, т.к. body был пустой
 	assert.Equal(t, "", result["original_url"])
+
+	// Не уникальность
+	resp2, err := http.Post(srv.URL+"/", "text/plain", strings.NewReader(""))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
 }
 
 func TestShorterPostGzip(t *testing.T) {
@@ -151,7 +178,7 @@ func TestShorterPostGzip(t *testing.T) {
 	defer srv.Close()
 
 	// Сжимаем тело запроса в gzip
-	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened"
+	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened/" + generateID()
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	_, err := gw.Write([]byte(longURL))
@@ -188,7 +215,7 @@ func TestShorterGetGzip(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened"
+	longURL := "https://practicum.yandex.ru/very/long/url/that/should/be/shortened/" + generateID()
 
 	// POST — создаём короткую ссылку
 	resp, err := http.Post(srv.URL+"/", "text/plain", strings.NewReader(longURL))
@@ -231,7 +258,7 @@ func TestShorterMultipleIDs(t *testing.T) {
 	ids := make(map[string]struct{})
 
 	for i := 0; i < 10; i++ {
-		url := fmt.Sprintf("https://example.com/url-%d", i)
+		url := fmt.Sprintf("https://example.com/url-%d/%s", i, generateID())
 		resp, err := http.Post(srv.URL+"/", "text/plain", strings.NewReader(url))
 		require.NoError(t, err)
 

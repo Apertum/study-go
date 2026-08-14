@@ -1,8 +1,11 @@
 package main
 
 import (
-	"log"
+	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
+	"time"
 
 	config "study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/handler"
@@ -29,6 +32,13 @@ func main() {
 	// загружаем данные из файла (если существует)
 	store := storage.New(config.FileName)
 
+	// Инициализируем БД один раз
+	db, err := initDB(config.DatabaseDSN)
+	if err != nil {
+		logrus.Error("Failed to initialize database:", err)
+	}
+
+
 	r := chi.NewRouter()
 	// глобальные middleware
 	r.Use(chimw.ClientIPFromRemoteAddr)
@@ -38,9 +48,37 @@ func main() {
 	// регистрация обработчиков
 	r.Post("/", handler.ShorterPost(store))
 	r.Post("/api/shorten", handler.ShorterPost(store))
+	r.Post("/api/shorten/batch", handler.ShorterBatchPost(store))
 	r.Get("/{id}", handler.ShorterGet(store))
+	r.Get("/ping", handler.ShorterPing(db))
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)
-	log.Fatal(http.ListenAndServe(config.Addr, r))
+	logrus.Fatal(http.ListenAndServe(config.Addr, r))
+}
+
+func initDB(dsn string) (*sql.DB, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("DATABASE_DSN is empty")
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Настраиваем пул соединений
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	// Проверяем, что БД действительно доступна
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		return nil, fmt.Errorf("database ping failed: %w", err)
+	}
+
+	return db, nil
 }
