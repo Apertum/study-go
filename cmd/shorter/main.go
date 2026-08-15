@@ -45,12 +45,19 @@ func main() {
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
 	r.Use(internalMiddleware.GzipMiddleware)
+
+	// middleware для авторизации
+	authMiddleware := handler.AuthMiddleware(db)
+
 	// регистрация обработчиков
-	r.Post("/", handler.ShorterPost(store))
-	r.Post("/api/shorten", handler.ShorterPost(store))
-	r.Post("/api/shorten/batch", handler.ShorterBatchPost(store))
+	r.Post("/ping", handler.ShorterPing(db))
+	r.Post("/login", handler.ShorterLoginPost(db))
+	// защищённые маршруты — требуют авторизованную куку
+	r.Handle("/", authMiddleware(handler.ShorterPost(store)))
+	r.Handle("/api/shorten", authMiddleware(handler.ShorterPost(store)))
+	r.Handle("/api/shorten/batch", authMiddleware(handler.ShorterBatchPost(store)))
+	r.Handle("/api/user/urls", authMiddleware(handler.ShorterUserURLsGet(db)))
 	r.Get("/{id}", handler.ShorterGet(store))
-	r.Get("/ping", handler.ShorterPing(db))
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

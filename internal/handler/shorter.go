@@ -2,12 +2,16 @@ package handler
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
@@ -15,6 +19,9 @@ import (
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
 )
+
+// контекстный ключ для user ID
+type contextKey struct{}
 
 // generateID создаёт случайный короткий ID
 func generateID() string {
@@ -48,11 +55,18 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 			longURL = string(body)
 		}
 
+		// извлекаем usrID из контекста (установлен AuthMiddleware)
+		usrID, ok := r.Context().Value(contextKey{}).(int)
+		if !ok {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		// генерируем ID и сохраняем
 		shortID := config.BaseURL + generateID()
 		uuid := s.NextID()
 
-		err = s.PutUnique(uuid, shortID, longURL)
+		err = s.PutUnique(uuid, shortID, longURL, usrID)
 		if err != nil {
 			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { //  а как ещё
 				if existingShortURL, exists := s.GetByOriginalURL(longURL); exists {
@@ -102,6 +116,13 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 			return
 		}
 
+		// извлекаем usrID из контекста (установлен AuthMiddleware)
+		usrID, ok := r.Context().Value(contextKey{}).(int)
+		if !ok {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		type ResponseItem struct {
 			CorrelationID string `json:"correlation_id"`
 			UUID          string `json:"uuid"`
@@ -114,7 +135,7 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 			shortID := config.BaseURL + generateID()
 			uuid := s.NextID()
 
-			err := s.PutUnique(uuid, shortID, req.URL)
+			err := s.PutUnique(uuid, shortID, req.URL, usrID)
 			if err != nil {
 				if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { //  а как ещё
 					if existingShortURL, exists := s.GetByOriginalURL(req.URL); exists {
@@ -193,5 +214,216 @@ func ShorterPing(db *sql.DB) http.HandlerFunc {
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	}
+}
+
+// signinCookie создаёт HMAC-SHA256 подпись для payload и возвращает строку signature.
+// SigninCookie — экспортированная версия для тестов.
+func signinCookie(cookieKey, payload string) string {
+	h := hmac.New(sha256.New, []byte(cookieKey))
+	h.Write([]byte(payload))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SigninCookieForTest — экспортированная версия для использования в тестах.
+func SigninCookieForTest(cookieKey, payload string) string {
+	return signinCookie(cookieKey, payload)
+}
+
+// verifyCookie проверяет HMAC-SHA256 подпись. Возвращает payload, если подпись валидна, иначе ошибку.
+func verifyCookie(cookieKey, payload, signature string) (string, error) {
+	expectedSig := signinCookie(cookieKey, payload)
+	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+		return "", http.ErrAbortHandler
+	}
+	return payload, nil
+}
+
+// AuthMiddleware — middleware для проверки авторизации через куку user_id.
+// Если куки нет — 401. Если подпись невалидна — 401.
+// Если пользователь не найден в БД — 403.
+// Если всё ок — кладёт user ID в контекст и передаёт запрос дальше.
+func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie("user_id")
+			if err != nil || cookie.Value == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// parse "payload:signature"
+			parts := splitString(cookie.Value, ':')
+			if len(parts) != 2 {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			payload, signature := parts[0], parts[1]
+
+			// верифицируем HMAC
+			if _, err := verifyCookie(config.CookieKey, payload, signature); err != nil {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// извлекаем user ID
+			usrID, err := strconv.Atoi(payload)
+			if err != nil {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+
+			// проверяем что пользователь существует в БД
+			var exists int
+			err = db.QueryRowContext(r.Context(), "SELECT 1 FROM usr WHERE id = $1", usrID).Scan(&exists)
+			if err == sql.ErrNoRows {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			} else if err != nil {
+				logrus.WithError(err).Error("AuthMiddleware DB error")
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+
+			// кладём user ID в контекст
+			ctx := context.WithValue(r.Context(), contextKey{}, usrID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// splitString — безопасный сплит с ограничением числа частей.
+func splitString(s string, sep rune) []string {
+	idx := -1
+	for i, c := range s {
+		if c == sep {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return []string{s}
+	}
+	return []string{s[:idx], s[idx+1:]}
+}
+
+// ShorterLoginPost — обработчик POST /login
+// Принимает JSON {"usr_name": "someName"}, ищет пользователя по usr_name в БД,
+// если не находит — создаёт нового (paswd пустой).
+// Выдаёт симметрично подписанную куку с user ID.
+func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var req struct {
+			UsrName string `json:"usr_name"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || req.UsrName == "" {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Ищем пользователя по usr_name
+		var usrID int
+		err = db.QueryRowContext(r.Context(), "SELECT id FROM usr WHERE usr_name = $1", req.UsrName).Scan(&usrID)
+		if err == sql.ErrNoRows {
+			// Не найден — создаём нового пользователя
+			// paswd пустой, т.к. для задачи не требуется аутентификация по паролю
+			err = db.QueryRowContext(r.Context(),
+				"INSERT INTO usr (usr_name, paswd) VALUES ($1, '') RETURNING id",
+				req.UsrName).Scan(&usrID)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to create user")
+				http.Error(w, "Failed to create user", http.StatusInternalServerError)
+				return
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Failed to query user")
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+
+		// Формируем payload и подпись
+		payload := fmt.Sprintf("%d", usrID)
+		signature := signinCookie(config.CookieKey, payload)
+
+		// Устанавливаем куку: значение = "payload:signature"
+		cookie := &http.Cookie{
+			Name:     "user_id",
+			Value:    payload + ":" + signature,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   false, // для локальной разработки можно false; в прод — true + SameSite=None
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   30 * 24 * 3600, // 30 дней
+		}
+		http.SetCookie(w, cookie)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"user_id": payload,
+		})
+	}
+}
+
+// ShorterUserURLsGet — обработчик GET /api/user/urls
+// Возвращает все сокращённые пользователем URL из БД.
+// Если URL нет — 204 No Content.
+func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// извлекаем usrID из контекста (установлен AuthMiddleware)
+		usrID, ok := r.Context().Value(contextKey{}).(int)
+		if !ok {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		type urlEntry struct {
+			ShortURL     string `json:"short_url"`
+			OriginalURL  string `json:"original_url"`
+		}
+
+		rows, err := db.QueryContext(r.Context(),
+			"SELECT short_url, original_url FROM url_srv WHERE usr_id = $1 ORDER BY id",
+			usrID,
+		)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to query user URLs")
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var urls []urlEntry
+		for rows.Next() {
+			var entry urlEntry
+			if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL); err != nil {
+				logrus.WithError(err).Error("Failed to scan URL row")
+				http.Error(w, "Database error", http.StatusInternalServerError)
+				return
+			}
+			urls = append(urls, entry)
+		}
+		if err := rows.Err(); err != nil {
+			logrus.WithError(err).Error("Error iterating URL rows")
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+
+		if urls == nil || len(urls) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(urls)
 	}
 }
