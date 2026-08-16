@@ -301,7 +301,7 @@ func TestShorterUserURLsGet_NoURLs(t *testing.T) {
 	db, mock := setupTestDB(t)
 	defer db.Close()
 
-	 mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
+	mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"short_url", "original_url"}))
 

@@ -20,6 +20,7 @@ type Entry struct {
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
 	UserID      int    `json:"user_id,omitempty"`
+	DeletedFlag bool   `db:"is_deleted"`
 }
 
 // Storage управляет in-memory хранилищем и синхронизацией с файлом или БД.
@@ -225,11 +226,53 @@ func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
 }
 
 // Get возвращает оригинальный URL по короткому ID.
-func (s *Storage) Get(shortID string) (string, bool) {
+func (s *Storage) Get(shortID string) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	url, ok := s.store[shortID]
-	return url, ok
+	if s.useDB {
+		return selectUrl(s, shortID)
+	} else {
+		url, ok := s.store[shortID]
+		return url, ok, nil
+	}
+}
+
+func selectUrl(s *Storage, id string) (string, bool, error) {
+	type urlEntry struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+		Is_deleted  bool   `json:"is_deleted"`
+	}
+
+	rows, err := s.db.Query(
+		"SELECT short_url, original_url, deleted as is_deleted FROM url_srv WHERE short_url like $1 ",
+		fmt.Sprintf("%%%s", id),
+	)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to query user URLs")
+		return "", false, err
+	}
+	defer rows.Close()
+
+	var urls []urlEntry
+	for rows.Next() {
+		var entry urlEntry
+		if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL, &entry.Is_deleted); err != nil {
+			logrus.WithError(err).Error("Failed to scan URL row")
+			return "", false, err
+		}
+		urls = append(urls, entry)
+	}
+	if err := rows.Err(); err != nil {
+		logrus.WithError(err).Error("Error iterating URL rows")
+		return "", false, err
+	}
+
+	if urls == nil || len(urls) == 0 {
+		return "", false, nil
+	} else {
+		return urls[0].OriginalURL, urls[0].Is_deleted, nil
+	}
 }
 
 // NextID возвращает следующий доступный номер и инкрементирует счётчик.

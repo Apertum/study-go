@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"runtime"
+	"sync"
 	"time"
 
 	config "study-go.ru/cho/eto/internal/config"
@@ -23,6 +25,30 @@ func init() {
 }
 
 func main() {
+fmt.Println("Ядер:", runtime.NumCPU())
+    fmt.Println("1/Логических процессоров:", runtime.GOMAXPROCS(2), "Горутин:", runtime.NumGoroutine())
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+    }()
+    fmt.Println("2/Логических процессоров:", runtime.GOMAXPROCS(0), "Горутин:", runtime.NumGoroutine())
+
+    var wg sync.WaitGroup
+    const n = 5
+
+    for i := range n {
+        wg.Add(1) // инкрементируем счётчик, сколько горутин нужно подождать
+
+        go func(i int) {
+            time.Sleep(100 * time.Millisecond)
+            fmt.Printf("hi %d\n", i)
+            // уменьшаем счётчик, когда горутина завершает работу
+            wg.Done()
+        }(i)
+    }
+
+        wg.Wait() // ждём все горутины
+        fmt.Println("Всё готово")
+
 	logrus.Info(`
 ╔═══════════════════════════════╗
 ║        short-short F          ║
@@ -58,6 +84,7 @@ func main() {
 	r.Handle("/api/shorten/batch", authMiddleware(handler.ShorterBatchPost(store)))
 	r.Handle("/api/user/urls", authMiddleware(handler.ShorterUserURLsGet(db)))
 	r.Get("/{id}", handler.ShorterGet(store))
+	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(db)).ServeHTTP)
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

@@ -17,16 +17,13 @@ go env GOPATH
 
 <pre>
 PS E:\GO\projects\stady-go> $env:Path += ";$env:GOPATH\bin"
-PS E:\GO\projects\stady-go> migrate create -ext sql -dir ./migrations -seq create_movies_table
+PS E:\GO\projects\stady-go> mockgen -source internal/store/store.go -destination internal/store/mock/store.go
 E:\GO\projects\stady-go\migrations\000001_create_movies_table.up.sql
 E:\GO\projects\stady-go\migrations\000001_create_movies_table.down.sql
 PS E:\GO\projects\stady-go>
 </pre>
 
 #### mockgen
-mockgen -source pkg/store/store.go -destination=mocks/mock_store2.go   
+mockgen -source internal/store/store.go -destination internal/store/mock/store.go 
 
-### Применить миграции можно следующей командой:
-
-migrate -database "postgres://postgres:postgres@localhost:5432/local_dev?sslmode=disable" -path ./migrations up
 

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -182,14 +183,21 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
-		longURL, ok := s.Get(id)
-		if !ok {
+		longURL, deleted, err := s.Get(id)
+		if err != nil || longURL == "" {
+			logrus.Error("Not found by ERROR. ", http.StatusNotFound)
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 
-		// перенаправляем на оригинальный URL
-		http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
+		if longURL != "" && deleted && 1==3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGone)
+			json.NewEncoder(w).Encode("{\"url\": \"Gone\"}")
+		} else {
+			// перенаправляем на оригинальный URL
+			http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
+		}
 	}
 }
 
@@ -386,8 +394,8 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 		}
 
 		type urlEntry struct {
-			ShortURL     string `json:"short_url"`
-			OriginalURL  string `json:"original_url"`
+			ShortURL    string `json:"short_url"`
+			OriginalURL string `json:"original_url"`
 		}
 
 		rows, err := db.QueryContext(r.Context(),
@@ -426,4 +434,61 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(urls)
 	}
+}
+
+func DeleteURLs(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// Создаем переменную для результата
+		var forDel []string
+
+		// Декодируем, преобразуя строку в срез байт []byte
+		err = json.Unmarshal(body, &forDel)
+		if err != nil {
+			fmt.Printf("Ошибка парсинга: %v\n", err)
+			return
+		}
+		logrus.Infof("\nПолученный срез для удаления: %v", forDel)
+		logrus.Infof("Длина среза: %d\n", len(forDel))
+
+		// извлекаем usrID из контекста (установлен AuthMiddleware)
+		usrID, ok := r.Context().Value(contextKey{}).(int)
+		if !ok {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		go delete(r, db, usrID, forDel)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode("{\"done\":  \"OK\"}")
+
+	}
+}
+
+func delete(r *http.Request, db *sql.DB, usrID int, forDel []string) {
+	// Объединяем через разделитель "|"
+	suffix := strings.Join(forDel, "|")
+
+	rows, err := db.QueryContext(r.Context(),
+		"update url_srv set deleted=true WHERE usr_id = $1 and short_url ~ $2",
+		usrID,
+		fmt.Sprintf("(%s)$", suffix), // Формируем регулярное выражение на стороне Go
+	)
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to DELETE user URLs: %s", suffix)
+		logrus.Error("Database error", http.StatusInternalServerError)
+		return
+	} else {
+		logrus.Infof("Удалили: %s", suffix)
+	}
+	defer rows.Close()
 }

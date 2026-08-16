@@ -93,3 +93,22 @@ func (mr *MockMessageStoreMockRecorder) SaveMessage(ctx, userID, msg interface{}
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMessage", reflect.TypeOf((*MockMessageStore)(nil).SaveMessage), ctx, userID, msg)
 }
+
+// SaveMessages mocks base method.
+func (m *MockMessageStore) SaveMessages(ctx context.Context, messages ...store.Message) error {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx}
+	for _, a := range messages {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "SaveMessages", varargs...)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SaveMessages indicates an expected call of SaveMessages.
+func (mr *MockMessageStoreMockRecorder) SaveMessages(ctx interface{}, messages ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx}, messages...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMessages", reflect.TypeOf((*MockMessageStore)(nil).SaveMessages), varargs...)
+}
