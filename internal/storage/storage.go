@@ -1,11 +1,13 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/lib/pq"
@@ -225,15 +227,16 @@ func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
 	return "", false
 }
 
-// Get возвращает оригинальный URL по короткому ID.
-func (s *Storage) Get(shortID string) (string, bool, error) {
+// Get возвращает оригинальный URL по короткому ID и флаг удаления записи.
+// В файловом хранилище механизм удаления отсутствует, поэтому флаг всегда false.
+func (s *Storage) Get(shortID string) (originalURL string, deleted bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.useDB {
 		return selectUrl(s, shortID)
 	} else {
-		url, ok := s.store[shortID]
-		return url, ok, nil
+		url, _ := s.store[shortID]
+		return url, false, nil
 	}
 }
 
@@ -241,7 +244,7 @@ func selectUrl(s *Storage, id string) (string, bool, error) {
 	type urlEntry struct {
 		ShortURL    string `json:"short_url"`
 		OriginalURL string `json:"original_url"`
-		Is_deleted  bool   `json:"is_deleted"`
+		IsDeleted   bool   `json:"is_deleted"`
 	}
 
 	rows, err := s.db.Query(
@@ -257,7 +260,7 @@ func selectUrl(s *Storage, id string) (string, bool, error) {
 	var urls []urlEntry
 	for rows.Next() {
 		var entry urlEntry
-		if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL, &entry.Is_deleted); err != nil {
+		if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL, &entry.IsDeleted); err != nil {
 			logrus.WithError(err).Error("Failed to scan URL row")
 			return "", false, err
 		}
@@ -271,7 +274,7 @@ func selectUrl(s *Storage, id string) (string, bool, error) {
 	if urls == nil || len(urls) == 0 {
 		return "", false, nil
 	} else {
-		return urls[0].OriginalURL, urls[0].Is_deleted, nil
+		return urls[0].OriginalURL, urls[0].IsDeleted, nil
 	}
 }
 
@@ -282,4 +285,22 @@ func (s *Storage) NextID() string {
 	id := s.nextID
 	s.nextID++
 	return fmt.Sprintf("%d", id)
+}
+
+func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) error {
+	// Объединяем через разделитель "|"
+	suffix := strings.Join(forDel, "|")
+
+	rows, err := s.db.QueryContext(ctx,
+		"update url_srv set deleted=true WHERE usr_id = $1 and short_url ~ $2",
+		usrID,
+		fmt.Sprintf("(%s)$", suffix), // Формируем регулярное выражение на стороне Go
+	)
+	defer rows.Close()
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to DELETE user URLs: %s", suffix)
+	} else {
+		logrus.Infof("Удалили: %s", suffix)
+	}
+	return err
 }

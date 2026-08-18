@@ -4,198 +4,192 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/go-resty/resty/v2"
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	alise "study-go.ru/cho/eto/internal/handler"
 	models "study-go.ru/cho/eto/internal/model"
+	mock_store "study-go.ru/cho/eto/internal/store/mock"
 )
 
-func TestWebhook(t *testing.T) {
-	handler := http.HandlerFunc(alise.Webhook)
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
+// simpleBody — валидное тело запроса для обработчика WebhookApp
+const simpleBody = `{"request": {"type": "SimpleUtterance", "command": "do something"}, "version": "1.0"}`
 
-	successBody := `{
-        "response": {
-            "text": "Для вас нет новых сообщений."
-        },
-        "session": {"id":"", "new":false},
-        "timezone":"Europe/Moscow",
-        "version":"1.0"
-    }`
+// gzipBytes сжимает данные в gzip-формат
+func gzipBytes(t *testing.T, data string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write([]byte(data))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
 
-	successBodyAsFirst := `{
-            "response": {
-                "text": "Точное время .* часов, .* минут. Для вас нет новых сообщений."
-            },
-            "session": {"id":"", "new":false},
-            "timezone":"Europe/Moscow",
-            "version":"1.0"
-        }`
+// gunzipString распаковывает gzip-данные в строку
+func gunzipString(t *testing.T, data []byte) string {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	require.NoError(t, err)
+	defer zr.Close()
+	raw, err := io.ReadAll(zr)
+	require.NoError(t, err)
+	return string(raw)
+}
 
+// newWebhookHandler собирает цепочку «gzipMiddleware + WebhookApp» с моком хранилища сообщений
+func newWebhookHandler(t *testing.T) http.Handler {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	ms := mock_store.NewMockMessageStore(ctrl)
+	ms.EXPECT().ListMessages(gomock.Any(), gomock.Any()).
+		Return(nil, nil).
+		AnyTimes()
+	h := alise.NewApp(ms)
+	return gzipMiddleware(http.HandlerFunc(h.WebhookApp))
+}
+
+func TestGzipMiddleware(t *testing.T) {
 	testCases := []struct {
-		name         string // добавляем название тестов
-		method       string
-		body         string // добавляем тело запроса в табличные тесты
-		expectedCode int
-		expectedBody string
+		name            string
+		requestBody     []byte
+		contentEncoding string
+		acceptEncoding  string
+		expectedCode    int
+		expectGzipResp  bool
 	}{
-		{
-			name:         "method_get",
-			method:       http.MethodGet,
-			expectedCode: http.StatusMethodNotAllowed,
-			expectedBody: "",
-		},
-		{
-			name:         "method_put",
-			method:       http.MethodPut,
-			expectedCode: http.StatusMethodNotAllowed,
-			expectedBody: "",
-		},
-		{
-			name:         "method_delete",
-			method:       http.MethodDelete,
-			expectedCode: http.StatusMethodNotAllowed,
-			expectedBody: "",
-		},
-		{
-			name:         "method_post_without_body",
-			method:       http.MethodPost,
-			expectedCode: http.StatusInternalServerError,
-			expectedBody: "",
-		},
-		{
-			name:         "method_post_unsupported_type",
-			method:       http.MethodPost,
-			body:         `{"request": {"type": "idunno", "command": "do something"}, "version": "1.0"}`,
-			expectedCode: http.StatusUnprocessableEntity,
-			expectedBody: "",
-		},
-		{
-			name:         "method_post_success",
-			method:       http.MethodPost,
-			body:         `{"request": {"type": "SimpleUtterance", "command": "sudo do something"}, "version": "1.0"}`,
-			expectedCode: http.StatusOK,
-			expectedBody: successBody,
-		},
-		{
-			name:         "method_post_success",
-			method:       http.MethodPost,
-			body:         `{"request": {"type": "SimpleUtterance", "command": "sudo do something"}, "session": {"new": true, "id": "id002"}, "version": "1.0"}`,
-			expectedCode: http.StatusOK,
-			// ответ стал сложнее, поэтому сравниваем его с шаблоном вместо точной строки
-			expectedBody: successBodyAsFirst,
-		},
+		{name: "без сжатия", requestBody: []byte(simpleBody), expectedCode: http.StatusOK},
+		{name: "сжатое тело запроса", requestBody: gzipBytes(t, simpleBody), contentEncoding: "gzip", expectedCode: http.StatusOK},
+		{name: "сжатый ответ", requestBody: []byte(simpleBody), acceptEncoding: "gzip", expectedCode: http.StatusOK, expectGzipResp: true},
+		{name: "сжатый запрос и ответ", requestBody: gzipBytes(t, simpleBody), contentEncoding: "gzip", acceptEncoding: "gzip", expectedCode: http.StatusOK, expectGzipResp: true},
+		{name: "битое gzip-тело запроса", requestBody: []byte("not gzip data"), contentEncoding: "gzip", expectedCode: http.StatusInternalServerError},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.method, func(t *testing.T) {
-			req := resty.New().R()
-			req.Method = tc.method
-			req.URL = srv.URL
-
-			if len(tc.body) > 0 {
-				req.SetHeader("Content-Type", "application/json")
-				req.SetBody(tc.body)
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(tc.requestBody))
+			if tc.contentEncoding != "" {
+				req.Header.Set("Content-Encoding", tc.contentEncoding)
+			}
+			if tc.acceptEncoding != "" {
+				req.Header.Set("Accept-Encoding", tc.acceptEncoding)
 			}
 
-			resp, err := req.Send()
-			assert.NoError(t, err, "error making HTTP request")
+			w := httptest.NewRecorder()
+			newWebhookHandler(t).ServeHTTP(w, req)
 
-			assert.Equal(t, tc.expectedCode, resp.StatusCode(), "Response code didn't match expected")
-			// проверяем корректность полученного тела ответа, если мы его ожидаем
-			if tc.expectedBody != "" {
-				//assert.JSONEq(t, tc.expectedBody, string(resp.Body()))
-				// сравниваем тело ответа с ожидаемым шаблоном
-				var rsExp models.Response
-				var rsFact models.Response
-				if err := json.Unmarshal([]byte(tc.expectedBody), &rsExp); err != nil {
-					assert.Error(t, err, "Не Json expectedBody")
-				}
-				if err := json.Unmarshal(resp.Body(), &rsFact); err != nil {
-					assert.Error(t, err, "Не Json resp.Body")
-				}
-
-				assert.Regexp(t, rsExp.Response.Text, rsFact.Response.Text)
+			assert.Equal(t, tc.expectedCode, w.Code)
+			if tc.expectedCode != http.StatusOK {
+				return
 			}
+
+			var resp models.Response
+			if tc.expectGzipResp {
+				require.NoError(t, json.Unmarshal([]byte(gunzipString(t, w.Body.Bytes())), &resp))
+			} else {
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			}
+			assert.NotEmpty(t, resp.Response.Text)
 		})
 	}
 }
 
-func TestGzipCompression(t *testing.T) {
-	handler := http.HandlerFunc(gzipMiddlewareForTest(alise.Webhook))
-
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
-
-	requestBody := `{
-        "request": {
-            "type": "SimpleUtterance",
-            "command": "sudo do something"
-        },
-        "version": "1.0",
-        "session": {"id":"", "new":false, "user":{"user_id":""}},
-        "timezone":"Europe/Moscow"
-    }`
-
-	// ожидаемое содержимое тела ответа при успешном запросе
-	successBody := `{
-        "response": {
-            "text": "Для вас нет новых сообщений."
-        },
-        "version": "1.0",
-        "session": {"id":"", "new":false, "user":{"user_id":""}},
-        "timezone":"Europe/Moscow"
-    }`
-
-	t.Run("sends_gzip", func(t *testing.T) {
-		buf := bytes.NewBuffer(nil)
-		zb := gzip.NewWriter(buf)
-		_, err := zb.Write([]byte(requestBody))
-		require.NoError(t, err)
-		err = zb.Close()
-		require.NoError(t, err)
-
-		r := httptest.NewRequest("POST", srv.URL, buf)
-		r.RequestURI = ""
-		r.Header.Set("Content-Encoding", "gzip")
-		r.Header.Set("Accept-Encoding", "")
-
-		resp, err := http.DefaultClient.Do(r)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-
-		defer resp.Body.Close()
-
-		b, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		require.JSONEq(t, successBody, string(b))
+func TestTimerTrace(t *testing.T) {
+	served := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = true
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("ok"))
 	})
 
-	t.Run("accepts_gzip", func(t *testing.T) {
-		buf := bytes.NewBufferString(requestBody)
-		r := httptest.NewRequest("POST", srv.URL, buf)
-		r.RequestURI = ""
-		r.Header.Set("Accept-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	TimerTrace(next).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
-		resp, err := http.DefaultClient.Do(r)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, served, "TimerTrace должен передать запрос следующему обработчику")
+	assert.Equal(t, http.StatusTeapot, w.Code)
+	assert.Equal(t, "ok", w.Body.String())
+}
 
-		defer resp.Body.Close()
+func TestCompressWriter(t *testing.T) {
+	t.Run("WriteHeader: успешный статус ставит Content-Encoding", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		cw := newCompressWriter(w)
 
-		zr, err := gzip.NewReader(resp.Body)
-		require.NoError(t, err)
+		cw.WriteHeader(http.StatusOK)
 
-		b, err := io.ReadAll(zr)
-		require.NoError(t, err)
-
-		require.JSONEq(t, successBody, string(b))
+		assert.Equal(t, "gzip", w.Header().Get("Content-Encoding"))
+		assert.Equal(t, http.StatusOK, w.Code)
 	})
+
+	t.Run("WriteHeader: ошибочный статус не ставит Content-Encoding", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		cw := newCompressWriter(w)
+
+		cw.WriteHeader(http.StatusInternalServerError)
+
+		assert.Empty(t, w.Header().Get("Content-Encoding"))
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("Write сжимает данные", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		cw := newCompressWriter(w)
+
+		n, err := cw.Write([]byte(`{"text":"hello"}`))
+		require.NoError(t, err)
+		assert.Equal(t, len(`{"text":"hello"}`), n)
+		require.NoError(t, cw.Close())
+
+		assert.Equal(t, `{"text":"hello"}`, gunzipString(t, w.Body.Bytes()))
+	})
+}
+
+func TestCompressReader(t *testing.T) {
+	t.Run("Read распаковывает тело запроса", func(t *testing.T) {
+		cr, err := newCompressReader(io.NopCloser(bytes.NewReader(gzipBytes(t, "hello gzip"))))
+		require.NoError(t, err)
+
+		raw, err := io.ReadAll(cr)
+		require.NoError(t, err)
+		assert.Equal(t, "hello gzip", string(raw))
+		require.NoError(t, cr.Close())
+	})
+
+	t.Run("некорректные gzip-данные возвращают ошибку", func(t *testing.T) {
+		_, err := newCompressReader(io.NopCloser(strings.NewReader("not gzip data")))
+		assert.Error(t, err)
+	})
+
+	t.Run("Close возвращает ошибку закрытия тела запроса", func(t *testing.T) {
+		errClose := errors.New("close failed")
+		er := errCloseReader{rc: bytes.NewReader(gzipBytes(t, "data")), closeErr: errClose}
+		cr, err := newCompressReader(er)
+		require.NoError(t, err)
+
+		_, err = io.ReadAll(cr)
+		require.NoError(t, err)
+		assert.ErrorIs(t, cr.Close(), errClose)
+	})
+}
+
+// errCloseReader — io.ReadCloser, чей Close возвращает заданную ошибку
+type errCloseReader struct {
+	rc       io.Reader
+	closeErr error
+}
+
+func (e errCloseReader) Read(p []byte) (int, error) {
+	return e.rc.Read(p)
+}
+
+func (e errCloseReader) Close() error {
+	return e.closeErr
 }

@@ -190,7 +190,7 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 			return
 		}
 
-		if longURL != "" && deleted && 1==3 {
+		if longURL != "" && deleted {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGone)
 			json.NewEncoder(w).Encode("{\"url\": \"Gone\"}")
@@ -261,7 +261,7 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 			}
 
 			// parse "payload:signature"
-			parts := splitString(cookie.Value, ':')
+			parts := strings.SplitN(cookie.Value, ":", 3)
 			if len(parts) != 2 {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -301,20 +301,6 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 	}
 }
 
-// splitString — безопасный сплит с ограничением числа частей.
-func splitString(s string, sep rune) []string {
-	idx := -1
-	for i, c := range s {
-		if c == sep {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return []string{s}
-	}
-	return []string{s[:idx], s[idx+1:]}
-}
 
 // ShorterLoginPost — обработчик POST /login
 // Принимает JSON {"usr_name": "someName"}, ищет пользователя по usr_name в БД,
@@ -436,7 +422,7 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func DeleteURLs(db *sql.DB) http.HandlerFunc {
+func DeleteURLs(s *storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		body, err := io.ReadAll(r.Body)
@@ -465,30 +451,11 @@ func DeleteURLs(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		go delete(r, db, usrID, forDel)
+		go s.DeleteUrls(r.Context(), usrID, forDel)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode("{\"done\":  \"OK\"}")
 
 	}
-}
-
-func delete(r *http.Request, db *sql.DB, usrID int, forDel []string) {
-	// Объединяем через разделитель "|"
-	suffix := strings.Join(forDel, "|")
-
-	rows, err := db.QueryContext(r.Context(),
-		"update url_srv set deleted=true WHERE usr_id = $1 and short_url ~ $2",
-		usrID,
-		fmt.Sprintf("(%s)$", suffix), // Формируем регулярное выражение на стороне Go
-	)
-	if err != nil {
-		logrus.WithError(err).Errorf("Failed to DELETE user URLs: %s", suffix)
-		logrus.Error("Database error", http.StatusInternalServerError)
-		return
-	} else {
-		logrus.Infof("Удалили: %s", suffix)
-	}
-	defer rows.Close()
 }
