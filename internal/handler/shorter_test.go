@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +14,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/middleware"
 	"study-go.ru/cho/eto/internal/storage"
 )
@@ -38,6 +42,14 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
+// тестовый middleware, который ставит usrID в контекст
+func testAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), contextKey{}, 1)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // setupShorterRouter создаёт chi-роутер с зарегистрированными обработчиками shorter
 func setupShorterRouter() http.Handler {
 	return setupShorterRouterWithStorage(storage.New("test_data.json"))
@@ -47,6 +59,7 @@ func setupShorterRouter() http.Handler {
 func setupShorterRouterWithStorage(s *storage.Storage) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.GzipMiddleware)
+	r.Use(testAuthMiddleware)
 	r.Post("/", ShorterPost(s))
 	r.Get("/{id}", ShorterGet(s))
 	return r
@@ -273,4 +286,197 @@ func TestShorterMultipleIDs(t *testing.T) {
 		assert.False(t, exists, "ID %s уже используется", res)
 		ids[res] = struct{}{}
 	}
+}
+
+// setupTestDB создаёт *sql.DB с sqlmock
+func setupTestDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	return db, mock
+}
+
+// TestShorterUserURLsGet_NoURLs проверяет 204 No Content когда у пользователя нет ссылок
+func TestShorterUserURLsGet_NoURLs(t *testing.T) {
+	db, mock := setupTestDB(t)
+	defer db.Close()
+
+	mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"short_url", "original_url"}))
+
+	handler := ShorterUserURLsGet(db)
+	req := httptest.NewRequest("GET", "/api/user/urls", nil)
+	ctx := context.WithValue(req.Context(), contextKey{}, 1)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Empty(t, w.Body.String())
+}
+
+// TestShorterUserURLsGet_WithURLs проверяет 200 OK с JSON-массивом URL
+func TestShorterUserURLsGet_WithURLs(t *testing.T) {
+	db, mock := setupTestDB(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"short_url", "original_url"}).
+		AddRow("http://short.ru/abc123", "https://example.com/one").
+		AddRow("http://short.ru/def456", "https://example.com/two")
+
+	mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
+		WithArgs(1).
+		WillReturnRows(rows)
+
+	handler := ShorterUserURLsGet(db)
+	req := httptest.NewRequest("GET", "/api/user/urls", nil)
+	ctx := context.WithValue(req.Context(), contextKey{}, 1)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var urls []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	err := json.Unmarshal(w.Body.Bytes(), &urls)
+	require.NoError(t, err)
+	assert.Len(t, urls, 2)
+	assert.Equal(t, "http://short.ru/abc123", urls[0].ShortURL)
+	assert.Equal(t, "https://example.com/one", urls[0].OriginalURL)
+	assert.Equal(t, "http://short.ru/def456", urls[1].ShortURL)
+	assert.Equal(t, "https://example.com/two", urls[1].OriginalURL)
+}
+
+// TestShorterUserURLsGet_SingleURL проверяет один URL
+func TestShorterUserURLsGet_SingleURL(t *testing.T) {
+	db, mock := setupTestDB(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"short_url", "original_url"}).
+		AddRow("http://short.ru/xyz789", "https://practicum.yandex.ru/very/long/url")
+
+	mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
+		WithArgs(1).
+		WillReturnRows(rows)
+
+	handler := ShorterUserURLsGet(db)
+	req := httptest.NewRequest("GET", "/api/user/urls", nil)
+	ctx := context.WithValue(req.Context(), contextKey{}, 1)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var urls []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	err := json.Unmarshal(w.Body.Bytes(), &urls)
+	require.NoError(t, err)
+	assert.Len(t, urls, 1)
+	assert.Equal(t, "http://short.ru/xyz789", urls[0].ShortURL)
+	assert.Equal(t, "https://practicum.yandex.ru/very/long/url", urls[0].OriginalURL)
+}
+
+// TestShorterUserURLsGet_DBError проверяет обработку ошибки БД
+func TestShorterUserURLsGet_DBError(t *testing.T) {
+	db, mock := setupTestDB(t)
+	defer db.Close()
+
+	mock.ExpectQuery(`SELECT short_url, original_url FROM url_srv WHERE usr_id = \$1 ORDER BY id`).
+		WithArgs(1).
+		WillReturnError(fmt.Errorf("connection refused"))
+
+	handler := ShorterUserURLsGet(db)
+	req := httptest.NewRequest("GET", "/api/user/urls", nil)
+	ctx := context.WithValue(req.Context(), contextKey{}, 1)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// TestShorterUserURLsGet_AuthMiddleware_NoCookie проверяет 401 при отсутствии куки
+func TestShorterUserURLsGet_AuthMiddleware_NoCookie(t *testing.T) {
+	db, _ := setupTestDB(t)
+	defer db.Close()
+
+	r := chi.NewRouter()
+	r.Use(middleware.GzipMiddleware)
+	r.Handle("/api/user/urls", AuthMiddleware(db)(ShorterUserURLsGet(db)))
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/user/urls")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestShorterUserURLsGet_AuthMiddleware_BadSignature проверяет 401 при невалидной подписи
+func TestShorterUserURLsGet_AuthMiddleware_BadSignature(t *testing.T) {
+	db, _ := setupTestDB(t)
+	defer db.Close()
+
+	r := chi.NewRouter()
+	r.Use(middleware.GzipMiddleware)
+	r.Handle("/api/user/urls", AuthMiddleware(db)(ShorterUserURLsGet(db)))
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	// Кука с невалидной подписью (payload:"bad_signature")
+	req, _ := http.NewRequest("GET", srv.URL+"/api/user/urls", nil)
+	req.AddCookie(&http.Cookie{Name: "user_id", Value: "1:bad_signature"})
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestShorterUserURLsGet_AuthMiddleware_UserNotFound проверяет 403 при удалённом пользователе
+func TestShorterUserURLsGet_AuthMiddleware_UserNotFound(t *testing.T) {
+	db, mock := setupTestDB(t)
+	defer db.Close()
+
+	// AuthMiddleware делает SELECT 1 FROM usr WHERE id = 1 — возвращаем ErrNoRows
+	mock.ExpectQuery(`SELECT 1 FROM usr WHERE id = \$1`).
+		WithArgs(1).
+		WillReturnError(sql.ErrNoRows) // вернёт 403 Forbidden
+
+	r := chi.NewRouter()
+	r.Use(middleware.GzipMiddleware)
+	r.Handle("/api/user/urls", AuthMiddleware(db)(ShorterUserURLsGet(db)))
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	// Генерируем правильную подпись для user_id=1
+	config.CookieKey = "thisSuoerSecretMyKey"
+	payload := "1"
+	signature := SigninCookieForTest(config.CookieKey, payload)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/user/urls", nil)
+	req.AddCookie(&http.Cookie{Name: "user_id", Value: payload + ":" + signature})
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }

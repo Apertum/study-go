@@ -12,6 +12,7 @@ var BaseURL string
 var Addr string
 var FileName string = "dataNN.json"
 var DatabaseDSN string
+var CookieKey string
 
 // ParseFlags обрабатывает аргументы командной строки
 // и сохраняет их значения в соответствующих переменных
@@ -23,6 +24,7 @@ func ParseFlags() {
 	flag.StringVar(&BaseURL, "b", "http://short.ru/", "base url")
 	flag.StringVar(&FileName, "f", "data.json", "history file")
 	flag.StringVar(&DatabaseDSN, "d", "", "DSN для подключения к PostgreSQL")
+	flag.StringVar(&CookieKey, "k", "thisSuoerSecretMyKey", "секретный ключ для HMAC-подписи куки")
 	// парсим переданные серверу аргументы в зарегистрированные переменные
 	flag.Parse()
 
@@ -45,6 +47,9 @@ func ParseFlags() {
 	}
 	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
 		DatabaseDSN = envDSN
+	}
+	if envCookieKey := os.Getenv("COOKIE_KEY"); envCookieKey != "" {
+		CookieKey = envCookieKey
 	}
 	logrus.Info("Read addr: ", Addr)
 	logrus.Info("Read base: ", BaseURL)

@@ -1,18 +1,19 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
-
-	"github.com/sirupsen/logrus"
-	"study-go.ru/cho/eto/internal/config"
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
+	"github.com/sirupsen/logrus"
+	"study-go.ru/cho/eto/internal/config"
 )
 
 // Entry — одна запись URL-сокращения.
@@ -20,16 +21,19 @@ type Entry struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
+	UserID      int    `json:"user_id,omitempty"`
+	DeletedFlag bool   `db:"is_deleted"`
 }
 
 // Storage управляет in-memory хранилищем и синхронизацией с файлом или БД.
 type Storage struct {
-	mu     sync.Mutex
-	store  map[string]string // shortID -> originalURL
-	ids    map[string]string // uuid -> shortID
-	nextID int
-	path   string
-	fileMu sync.Mutex
+	mu       sync.Mutex
+	store    map[string]string // shortURL -> originalURL
+	ids      map[string]string // uuid -> shortURL
+	urlUsers map[string]int    // shortURL -> usrID
+	nextID   int
+	path     string
+	fileMu   sync.Mutex
 
 	db    *sql.DB
 	useDB bool
@@ -41,10 +45,11 @@ type Storage struct {
 // В противном случае используется файловое хранилище.
 func New(filePath string) *Storage {
 	s := &Storage{
-		store:  make(map[string]string),
-		ids:    make(map[string]string),
-		nextID: 0,
-		path:   filePath,
+		store:    make(map[string]string),
+		ids:      make(map[string]string),
+		urlUsers: make(map[string]int),
+		nextID:   0,
+		path:     filePath,
 	}
 
 	if config.DatabaseDSN != "" {
@@ -69,7 +74,7 @@ func New(filePath string) *Storage {
 
 // loadFromDB читает все записи из url_srv и восстанавливает in-memory состояние.
 func (s *Storage) loadFromDB() {
-	rows, err := s.db.Query("SELECT id, uuid, original_url, short_url FROM url_srv")
+	rows, err := s.db.Query("SELECT id, uuid, original_url, short_url, COALESCE(usr_id, 0) FROM url_srv")
 	if err != nil {
 		logrus.WithError(err).Error("Ошибка чтения таблицы url_srv")
 		return
@@ -80,12 +85,14 @@ func (s *Storage) loadFromDB() {
 	for rows.Next() {
 		var id int
 		var uuid, originalURL, shortURL string
-		if err := rows.Scan(&id, &uuid, &originalURL, &shortURL); err != nil {
+		var usrID int
+		if err := rows.Scan(&id, &uuid, &originalURL, &shortURL, &usrID); err != nil {
 			logrus.WithError(err).Error("Ошибка сканирования строки url_srv")
 			continue
 		}
 		s.store[shortURL] = originalURL
 		s.ids[uuid] = shortURL
+		s.urlUsers[shortURL] = usrID
 		if id >= s.nextID {
 			s.nextID = id + 1
 		}
@@ -121,6 +128,7 @@ func (s *Storage) load() {
 	for _, e := range entries {
 		s.store[e.ShortURL] = e.OriginalURL
 		s.ids[e.UUID] = e.ShortURL
+		s.urlUsers[e.ShortURL] = e.UserID
 		id, err := strconv.Atoi(e.UUID)
 		if err != nil {
 			fmt.Println("Штош. Ошибка при парсинге:", err)
@@ -136,7 +144,7 @@ func (s *Storage) load() {
 }
 
 // save записывает все данные в файл (атомарно через temp-file + rename).
-func (s *Storage) save(uuid, shortURL, originalURL string) error {
+func (s *Storage) save(uuid, shortURL, originalURL string, usrID int) error {
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
 
@@ -154,12 +162,14 @@ func (s *Storage) save(uuid, shortURL, originalURL string) error {
 	s.mu.Lock()
 	s.store[shortURL] = originalURL
 	s.ids[uuid] = shortURL
+	s.urlUsers[shortURL] = usrID
 	entries := make([]Entry, 0, len(s.store))
 	for uuid, shortURL := range s.ids {
 		entries = append(entries, Entry{
 			UUID:        uuid,
 			ShortURL:    shortURL,
 			OriginalURL: s.store[shortURL],
+			UserID:      s.urlUsers[shortURL],
 		})
 	}
 	s.mu.Unlock()
@@ -184,11 +194,11 @@ func (s *Storage) save(uuid, shortURL, originalURL string) error {
 }
 
 // saveToDB сохраняет запись в таблицу url_srv.
-func (s *Storage) saveToDB(uuid, shortURL, originalURL string) error {
-	logrus.Debug("(uuid, original_url, short_url): " + uuid + " / " + originalURL + " // " + shortURL)
+func (s *Storage) saveToDB(uuid, shortURL, originalURL string, usrID int) error {
+	logrus.Debug("(uuid, original_url, short_url, usr_id): " + uuid + " / " + originalURL + " // " + shortURL + " / " + fmt.Sprintf("%d", usrID))
 	_, err := s.db.Exec(
-		"INSERT INTO url_srv (uuid, original_url, short_url) VALUES ($1, $2, $3)",
-		uuid, originalURL, shortURL,
+		"INSERT INTO url_srv (uuid, original_url, short_url, usr_id) VALUES ($1, $2, $3, $4)",
+		uuid, originalURL, shortURL, usrID,
 	)
 	if err != nil {
 		return err
@@ -197,11 +207,11 @@ func (s *Storage) saveToDB(uuid, shortURL, originalURL string) error {
 }
 
 // PutUnique сохраняет новую запись, возвращая ошибку pq.Error при дубликате original_url.
-func (s *Storage) PutUnique(uuid, shortURL, originalURL string) error {
+func (s *Storage) PutUnique(uuid, shortURL, originalURL string, usrID int) error {
 	if s.useDB {
-		return s.saveToDB(uuid, shortURL, originalURL)
+		return s.saveToDB(uuid, shortURL, originalURL, usrID)
 	} else {
-		return s.save(uuid, shortURL, originalURL)
+		return s.save(uuid, shortURL, originalURL, usrID)
 	}
 }
 
@@ -217,12 +227,55 @@ func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
 	return "", false
 }
 
-// Get возвращает оригинальный URL по короткому ID.
-func (s *Storage) Get(shortID string) (string, bool) {
+// Get возвращает оригинальный URL по короткому ID и флаг удаления записи.
+// В файловом хранилище механизм удаления отсутствует, поэтому флаг всегда false.
+func (s *Storage) Get(shortID string) (originalURL string, deleted bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	url, ok := s.store[shortID]
-	return url, ok
+	if s.useDB {
+		return selectUrl(s, shortID)
+	} else {
+		url, _ := s.store[shortID]
+		return url, false, nil
+	}
+}
+
+func selectUrl(s *Storage, id string) (string, bool, error) {
+	type urlEntry struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+		IsDeleted   bool   `json:"is_deleted"`
+	}
+
+	rows, err := s.db.Query(
+		"SELECT short_url, original_url, deleted as is_deleted FROM url_srv WHERE short_url like $1 ",
+		fmt.Sprintf("%%%s", id),
+	)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to query user URLs")
+		return "", false, err
+	}
+	defer rows.Close()
+
+	var urls []urlEntry
+	for rows.Next() {
+		var entry urlEntry
+		if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL, &entry.IsDeleted); err != nil {
+			logrus.WithError(err).Error("Failed to scan URL row")
+			return "", false, err
+		}
+		urls = append(urls, entry)
+	}
+	if err := rows.Err(); err != nil {
+		logrus.WithError(err).Error("Error iterating URL rows")
+		return "", false, err
+	}
+
+	if urls == nil || len(urls) == 0 {
+		return "", false, nil
+	} else {
+		return urls[0].OriginalURL, urls[0].IsDeleted, nil
+	}
 }
 
 // NextID возвращает следующий доступный номер и инкрементирует счётчик.
@@ -232,4 +285,22 @@ func (s *Storage) NextID() string {
 	id := s.nextID
 	s.nextID++
 	return fmt.Sprintf("%d", id)
+}
+
+func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) error {
+	// Объединяем через разделитель "|"
+	suffix := strings.Join(forDel, "|")
+
+	rows, err := s.db.QueryContext(ctx,
+		"update url_srv set deleted=true WHERE usr_id = $1 and short_url ~ $2",
+		usrID,
+		fmt.Sprintf("(%s)$", suffix), // Формируем регулярное выражение на стороне Go
+	)
+	defer rows.Close()
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to DELETE user URLs: %s", suffix)
+	} else {
+		logrus.Infof("Удалили: %s", suffix)
+	}
+	return err
 }
