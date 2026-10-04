@@ -17,6 +17,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
+	"study-go.ru/cho/eto/internal/audit"
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
 )
@@ -33,7 +34,7 @@ func generateID() string {
 
 // ShorterPost — обработчик POST /
 // Принимает URL в теле запроса (JSON или raw), сохраняет, возвращает короткий ID
-func ShorterPost(s *storage.Storage) http.HandlerFunc {
+func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -84,6 +85,17 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 			return
 		}
 
+		// Аудит после успешного сохранения
+		if central != nil {
+			userIDStr := strconv.FormatInt(int64(usrID), 10)
+			central.Notify(audit.Event{
+				Timestamp: time.Now().Unix(),
+				Action:    audit.ActionShorten,
+				UserID:    userIDStr,
+				URL:       longURL,
+			})
+		}
+
 		// возвращаем короткий ID
 		w.Header().Set("Content-Type", "application/json")
 		// Порядок важен: WriteHeader отправляет заголовки клиенту.
@@ -99,7 +111,7 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 }
 
 // ShorterBatchPost — обработчик POST /api/shorten/batch
-func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
+func ShorterBatchPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -132,6 +144,7 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 		}
 
 		responses := make([]ResponseItem, 0, len(reqs))
+		userIDStr := strconv.FormatInt(int64(usrID), 10)
 		for _, req := range reqs {
 			shortID := config.BaseURL + generateID()
 			uuid := s.NextID()
@@ -169,6 +182,16 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 				ShortURL:      shortID,
 				OriginalURL:   req.URL,
 			})
+
+			// Аудит после успешного сохранения каждого URL в батче
+			if central != nil {
+				central.Notify(audit.Event{
+					Timestamp: time.Now().Unix(),
+					Action:    audit.ActionShorten,
+					UserID:    userIDStr,
+					URL:       req.URL,
+				})
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -179,7 +202,7 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 
 // ShorterGet — обработчик GET /{id}
 // Возвращает оригинальный URL по короткому ID
-func ShorterGet(s *storage.Storage) http.HandlerFunc {
+func ShorterGet(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
@@ -194,10 +217,20 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGone)
 			json.NewEncoder(w).Encode("{\"url\": \"Gone\"}")
-		} else {
-			// перенаправляем на оригинальный URL
-			http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
+			return
 		}
+
+		// Аудит прохождения по ссылке
+		if central != nil {
+			central.Notify(audit.Event{
+				Timestamp: time.Now().Unix(),
+				Action:    audit.ActionFollow,
+				URL:       longURL,
+			})
+		}
+
+		// перенаправляем на оригинальный URL
+		http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
 	}
 }
 
@@ -300,7 +333,6 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 		})
 	}
 }
-
 
 // ShorterLoginPost — обработчик POST /login
 // Принимает JSON {"usr_name": "someName"}, ищет пользователя по usr_name в БД,
