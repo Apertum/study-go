@@ -1,3 +1,9 @@
+// Package config предоставляет конфигурацию сервера URL-сократителя.
+//
+// Переменные пакета заполняются при вызове ParseFlags() из init():
+//   - флаги командной строки (например, -a, -b, -d)
+//   - переменные окружения, которые переопределяют флаги:
+//     SERVER_ADDRESS, FILE_STORAGE_PATH, BASE_URL, DATABASE_DSN, COOKIE_KEY, AUDIT_FILE, AUDIT_URL
 package config
 
 import (
@@ -7,19 +13,46 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// экспортированная переменная
-var BaseURL string
-var Addr string
-var FileName string = "dataNN.json"
-var DatabaseDSN string
-var CookieKey string
+// Экспортированные переменные конфигурации, заполняемые ParseFlags().
+//
+// Переменные окружения переопределяют значения флагов командной строки.
+var (
+	// BaseURL — базовый префикс для коротких URL (например, "http://short.ru/").
+	// Флаг: -b | ENV: BASE_URL
+	BaseURL string
 
-// Audit параметры
-var AuditFile string
-var AuditURL string
+	// Addr — адрес и порт HTTP-сервера (например, ":8080").
+	// Флаг: -a | ENV: SERVER_ADDRESS
+	Addr string
 
-// ParseFlags обрабатывает аргументы командной строки
-// и сохраняет их значения в соответствующих переменных
+	// FileName — путь к JSON-файлу хранения (fallback без БД).
+	// Флаг: -f | ENV: FILE_STORAGE_PATH
+	FileName string = "dataNN.json"
+
+	// DatabaseDSN — DSN-строка для подключения к PostgreSQL.
+	// Флаг: -d | ENV: DATABASE_DSN
+	DatabaseDSN string
+
+	// CookieKey — секретный ключ для HMAC-SHA256 подписи куки user_id.
+	// Флаг: -k | ENV: COOKIE_KEY
+	CookieKey string
+
+	// AuditFile — путь к файлу для логов аудита (JSONL).
+	// Флаг: --audit-file | ENV: AUDIT_FILE
+	AuditFile string
+
+	// AuditURL — URL удалённого сервера-приёмника аудита.
+	// Флаг: --audit-url | ENV: AUDIT_URL
+	AuditURL string
+)
+
+// ParseFlags обрабатывает аргументы командной строки и переменные окружения,
+// заполняя экспортированные переменные конфигурации пакета.
+//
+// Порядок приоритета: переменные окружения > флаги командной строки.
+// Переменные окружения переопределяют флаги, если их значение не пустое.
+//
+// Вызывается из init() в main.go.
 func ParseFlags() {
 
 	logrus.Info("Start ParseFlags")

@@ -1,3 +1,7 @@
+// Package middleware предоставляет HTTP-middleware для URL-сократителя.
+//
+// Доступные middleware:
+//   - GzipMiddleware — поддержка gzip-сжатия запросов и ответов
 package middleware
 
 import (
@@ -10,9 +14,9 @@ import (
 // compressWriter реализует http.ResponseWriter и позволяет прозрачно сжимать ответ.
 // Сжимает только контент с типами application/json и text/html.
 type compressWriter struct {
-	w            http.ResponseWriter
-	zw           *gzip.Writer
-	contentType  string
+	w             http.ResponseWriter
+	zw            *gzip.Writer
+	contentType   string
 	headerWritten bool
 }
 
@@ -98,9 +102,18 @@ func isCompressible(contentType string) bool {
 		strings.Contains(contentType, "text/html")
 }
 
-// GzipMiddleware — middleware для chi-роутера, добавляющий поддержку gzip:
-//   - распаковывает запросы с Content-Encoding: gzip
-//   - сжимает ответы для клиентов с Accept-Encoding: gzip (только для application/json, text/html)
+// GzipMiddleware — chi-роутер middleware для gzip-сжатия.
+//
+// Поведение:
+//   - Запросы: если клиент отправил Content-Encoding: gzip, распаковывает тело автоматически.
+//   - Ответы: если клиент указал Accept-Encoding: gzip, сжимает ответ (только для application/json, text/html).
+//
+// Добавляется как глобальное middleware в main.go перед определением маршрутов.
+//
+// Пример использования в chi роутере:
+//
+//	r := chi.NewRouter()
+//	r.Use(middleware.GzipMiddleware)
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ow := w
