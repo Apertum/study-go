@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof"
 	"time"
 
 	"study-go.ru/cho/eto/internal/audit"
@@ -78,6 +79,12 @@ func main() {
 	r.Handle("/api/user/urls", authMiddleware(handler.ShorterUserURLsGet(db)))
 	r.Get("/{id}", handler.ShorterGet(store, central))
 	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(store)).ServeHTTP)
+
+	// pprof — маршруты для профилирования (не требуют авторизации)
+	r.Handle("/debug/pprof/*", http.DefaultServeMux)
+	r.Get("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/debug/pprof/cmdline", http.StatusMovedPermanently)
+	})
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)
