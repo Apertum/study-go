@@ -55,7 +55,7 @@ func GetAnyClient(url string) {
 	body := `{"id":"101"}`
 	request, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "multipart/form-data")
 	response, err := client.Do(request)
