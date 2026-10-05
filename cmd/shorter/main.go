@@ -80,11 +80,10 @@ func main() {
 	r.Get("/{id}", handler.ShorterGet(store, central))
 	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(store)).ServeHTTP)
 
-	// pprof — маршруты для профилирования (не требуют авторизации)
-	r.Handle("/debug/pprof/*", http.DefaultServeMux)
-	r.Get("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/debug/pprof/cmdline", http.StatusMovedPermanently)
-	})
+	// pprof — маршруты для профилирования (требуют авторизацию через AuthMiddleware)
+	// Типа так же, как и другие методы и с той же кукой. Можно еще как-то на другой порт, не смотрел как, попробовать если понадобится.
+	r.Handle("/debug/pprof/*", authMiddleware(handler.PprofHandler(store, central)))
+	r.Get("/debug/pprof/", authMiddleware(handler.PprofHandler(store, central)).ServeHTTP)
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

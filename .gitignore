@@ -40,3 +40,4 @@ go.work.sum
 /insert.sql
 /USvideos.csv
 *.patch
+/.tmp

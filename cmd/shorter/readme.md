@@ -1,4 +1,4 @@
-lj,fdm 'nj# Shorter — HTTP-сервис сокращения ссылок
+Shorter — HTTP-сервис сокращения ссылок
 
 Сервис сокращает длинные URL-адреса, сохраняя результаты в PostgreSQL.
 Поддерживает аутентификацию пользователей через подписанные куки и привязку сокращённых URL к пользователям.
@@ -361,6 +361,15 @@ curl -v http://localhost:8080/api/user/urls -b "user_id=1:<signature>"
 
 ---
 
+## Безопасность
+
+//доработка fix1
+- `AuthMiddleware` защищает критичные маршруты: POST /, POST /api/shorten, POST /api/shorten/batch, GET /api/user/urls, DELETE /api/user/urls.
+- `/debug/pprof/*` — маршруты профилирования (pprof) требуют авторизованную куку (`user_id`). Без неё — 401 Unauthorized.
+- `GET /{id}` не требует авторизации — это публичный редирект.
+
+---
+
 ## Потокобезопасность
 
 - `Storage` использует `sync.Mutex` для защиты in-memory кэша.
@@ -379,4 +388,116 @@ internal/
   config/logs.go        # Инициализация логирования
   middleware/gzip.go    # Gzip-сжатие ответов
 migrations/             # SQL-миграции БД
+```
+
+---
+//доработка fix1 в доку написал, а вот как типа в файл чтоб писалось не понял как сделать. просто скопипаслил из cmd
+## Бенчмарки и профилирование
+
+### Бенчмарки
+
+В `internal/handler/bench_test.go` определены 6 бенчмарков для оценки производительности хендлеров и middleware:
+
+| Бенчмарк                             | Время        | Память     | Allocs/op |
+|--------------------------------------|-------------|------------|-----------|
+| `BenchmarkShorterGet_not_found`      | ~6200 ns/op | ~6630 B/op | 33        |
+| `BenchmarkShorterPost_single`        | ~3800 ns/op | ~7390 B/op | 31        |
+| `BenchmarkShorterBatchPost_10`       | ~10500 ns/op| ~9920 B/op | 58        |
+| `BenchmarkShorterBatchPost_100`      | ~68000 ns/op| ~36570 B/op| 248       |
+| `BenchmarkGzipMiddleware_enabled`    | ~135000 ns/op| ~822400 B/op| 47      |
+| `BenchmarkGzipMiddleware_disabled`   | ~2900 ns/op | ~6600 B/op | 25        |
+
+**Запуск:**
+
+```bash
+# Все бенчмарки с замерами памяти и CPU-профилем
+go test -bench=. -benchmem -count=1 -cpuprofile=profiles/base.pprof ./internal/handler/
+
+# Один конкретный бенчмарк
+go test -bench=BenchmarkShorterPost_single -benchmem ./internal/handler/
+```
+
+### CPU-профилирование
+
+Профили сохраняются в `profiles/base.pprof` (baseline) и `profiles/result.pprof` (после изменений).
+
+**Генерация профилей:**
+
+```bash
+# Базовый запуск — фиксируем baseline
+go test -bench=. -benchmem -count=1 -cpuprofile=profiles/base.pprof ./internal/handler/
+
+# После внесения изменений запускаем ещё раз
+go test -bench=. -benchmem -count=1 -cpuprofile=profiles/result.pprof ./internal/handler/
+```
+
+**Анализ:**
+
+```bash
+# Топ-функции по потреблению CPU
+go tool pprof -top profiles/base.pprof
+
+# Топ-функции по накопительному времени
+go tool pprof -top -cum profiles/base.pprof
+
+# Интерактивный просмотр с graphviz
+go tool pprof -http=:8080 profiles/base.pprof
+```
+
+### Сравнение профилей (base vs result)
+
+#### Дифф бенчмарков
+
+Сравнение времени выполнения, потребления памяти и аллокаций между двумя запусками:
+
+| Benchmark                            | Time (base → result)   | Memory (base → result) | Allocs |
+|--------------------------------------|------------------------|------------------------|--------|
+| `BenchmarkShorterGet_not_found`      | 6515 → 6171 (-344)     | 6632 → 6632 (+0)       | +0     |
+| `BenchmarkShorterPost_single`        | 3943 → 3681 (-262)     | 7389 → 7389 (+0)       | +0     |
+| `BenchmarkShorterBatchPost_10`       | 10924 → 10198 (-726)   | 9918 → 9918 (+0)       | +0     |
+| `BenchmarkShorterBatchPost_100`      | 67866 → 67546 (-320)   | 36572 → 36572 (+0)     | +0     |
+
+Все бенчмарки показали небольшое улучшение, что подтверждает отсутствие регрессий после внесённых изменений. Различия в пределах погрешности системы.
+
+#### Дифф CPU-профилей
+
+Сравнение распределения CPU-нагрузок между запусками:
+
+```diff
+- Duration: 8.15s, Total samples = 13630ms (167.34%)
++ Duration: 8.71s, Total samples = 13950ms (160.14%)
+-    1130ms  8.29%  8.29%     1130ms  8.29%  runtime.futex
++    1430ms 10.25% 10.25%     1430ms 10.25%  runtime.futex
+-     790ms  5.80% 14.09%      790ms  5.80%  runtime.memclrNoHeapPointers
++     550ms  3.94% 14.19%      550ms  3.94%  runtime.memclrNoHeapPointers
+-     500ms  3.67% 17.75%      920ms  6.75%  encoding/json.checkValid
++     530ms  3.80% 17.99%      960ms  6.88%  encoding/json.checkValid
+```
+
+Основные потребители CPU в обоих профилях одинаковые:
+1. `runtime.futex` — системные вызовы синхронизации (~9-10%)
+2. `runtime.memclrNoHeapPointers` — очистка памяти GC (~4-6%)
+3. `encoding/json.checkValid` — парсинг JSON (~3-4%)
+4. `runtime.scanObject` — сканирование объектов GC (~3-5%)
+
+Различия незначительны (±200ms на функцию), что подтверждает стабильность производительности между запусками без изменений кода.
+
+**Генерация сравнения:**
+
+```bash
+# Сравнить два профиля
+go tool pprof -top -nodecount=5 profiles/base.pprof profiles/result.pprof
+```
+
+### Скрипт автоматизации
+
+```bash
+# Запуск базового бенчмарка с профилем
+bash scripts/run_benchmarks.sh base
+
+# Запуск после изменений (результат)
+bash scripts/run_benchmarks.sh result
+
+# Сравнение профилей после обоих запусков
+go tool pprof -top -nodecount=10 profiles/base.pprof profiles/result.pprof
 ```

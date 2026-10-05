@@ -69,28 +69,18 @@ type Event struct {
 	URL string `json:"url"`
 }
 
-// MarshalJSON кастомная сериализация для исключения пустого user_id из JSON.
-// Когда user_id не задан, поле полностью исключается из выходного документа.
+// MarshalJSON исключает поле user_id из JSON-вывода, если оно пустое.
+// Использует alias-структуру с json:"user_id,omitempty" — стандартный механизм Go
+// вместо ручной конкатенации строк. Хотя я изначально просто строчки склеил
 func (e Event) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteString(`{"ts":`)
-	buf.WriteString(fmt.Sprintf("%d", e.Timestamp))
-	buf.WriteString(`,"action":"`)
-	buf.WriteString(string(e.Action))
-	buf.WriteString(`","url":"`)
-	buf.WriteString(e.URL)
-	buf.WriteString(`"}`)
-	if e.UserID != "" {
-		// вставляем user_id перед закрывающей скобкой
-		data := buf.Bytes()
-		result := make([]byte, 0, len(data)+len(e.UserID)+12)
-		result = append(result, data[:len(data)-1]...)
-		result = append(result, `,"user_id":"`...)
-		result = append(result, []byte(e.UserID)...)
-		result = append(result, '"', '}')
-		return result, nil
-	}
-	return buf.Bytes(), nil
+	type alias Event
+	return json.Marshal(&struct {
+		UserID string `json:"user_id,omitempty"`
+		*alias
+	}{
+		UserID: e.UserID,
+		alias:  (*alias)(&e),
+	})
 }
 
 // EventHandler — интерфейс для приёмников аудита. Каждый наблюдатель реализует
@@ -223,11 +213,28 @@ func (c *Central) Subscribe(h EventHandler) {
 	c.handlers = append(c.handlers, h)
 }
 
-// Notify уведомляет всех подписанных наблюдателей о событии.
-// Каждый наблюдатель вызывается в отдельной горутине через go h.Handle(event).
-// Если список наблюдателей пуст или central равен nil, метод не паникует.
-//
-// Event передается по значению (копируется), поэтому наблюдатели могут менять его поля.
+// NotifySynced уведомляет всех подписанных наблюдателей о событии и блокирует вызывающий
+// поток до завершения всех Handle-горутин. Возвращённый WaitGroup можно использовать
+// для дополнительной синхронизации после возврата метода.
+func (c *Central) NotifySynced(event Event) sync.WaitGroup {
+	var wg sync.WaitGroup
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	wg.Add(len(c.handlers))
+	for _, h := range c.handlers {
+		go func(h EventHandler) {
+			h.Handle(event)
+			wg.Done()
+		}(h)
+	}
+	wg.Wait()
+	return wg
+}
+
+// Notify уведомляет всех подписанных наблюдателей о событии в отдельных горутинах.
+// Метод неблокирующий — возврат происходит до завершения Handle.
+// Для тестов и случаев, где требуется синхронизация, используйте NotifySynced.
 func (c *Central) Notify(event Event) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

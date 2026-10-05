@@ -33,14 +33,14 @@ func ExampleNewFileHandler() {
 	central := audit.NewCentral()
 	central.Subscribe(handler)
 
-	// Генерируем событие
+	// Генерируем событие (блокируем до завершения всех обработчиков)
 	event := audit.Event{
 		Timestamp: 1700000000,
 		Action:    audit.ActionShorten,
 		UserID:    "42",
 		URL:       "https://example.com/very/long/path",
 	}
-	central.Notify(event)
+	central.NotifySynced(event)
 
 	// Читаем записанное событие из файла
 	data, _ := os.ReadFile(tmpPath)
@@ -118,7 +118,7 @@ func ExampleCentral_Subscribe() {
 		Action:    audit.ActionFollow,
 		URL:       "https://example.com/demo",
 	}
-	central.Notify(event)
+	central.NotifySynced(event)
 
 	data, _ := os.ReadFile(tmpPath)
 	var ev audit.Event

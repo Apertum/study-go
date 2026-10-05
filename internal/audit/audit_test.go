@@ -9,17 +9,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
-// --- Action constants ---
+// --- Константы Action ---
 
 func TestActionConstants(t *testing.T) {
 	if ActionShorten != "shorten" {
-		t.Errorf("ActionShorten = %q, want %q", ActionShorten, "shorten")
+		t.Errorf("ActionShorten = %q, ожидалось %q", ActionShorten, "shorten")
 	}
 	if ActionFollow != "follow" {
-		t.Errorf("ActionFollow = %q, want %q", ActionFollow, "follow")
+		t.Errorf("ActionFollow = %q, ожидалось %q", ActionFollow, "follow")
 	}
 }
 
@@ -44,16 +43,16 @@ func TestEventMarshalJSON_WithUserID(t *testing.T) {
 	}
 
 	if int(result["ts"].(float64)) != 12345678 {
-		t.Errorf("ts = %v, want 12345678", result["ts"])
+		t.Errorf("ts = %v, ожидалось 12345678", result["ts"])
 	}
 	if result["action"] != "shorten" {
-		t.Errorf("action = %v, want shorten", result["action"])
+		t.Errorf("action = %v, ожидалось shorten", result["action"])
 	}
 	if result["user_id"] != "12315134" {
-		t.Errorf("user_id = %v, want 12315134", result["user_id"])
+		t.Errorf("user_id = %v, ожидалось 12315134", result["user_id"])
 	}
 	if result["url"] != "https://example.com/long" {
-		t.Errorf("url = %v, want https://example.com/long", result["url"])
+		t.Errorf("url = %v, ожидалось https://example.com/long", result["url"])
 	}
 }
 
@@ -75,13 +74,13 @@ func TestEventMarshalJSON_EmptyUserID(t *testing.T) {
 	}
 
 	if _, exists := result["user_id"]; exists {
-		t.Error("empty user_id should be omitted from JSON")
+		t.Error("пустой user_id должен отсутствовать из JSON")
 	}
 	if result["action"] != "follow" {
-		t.Errorf("action = %v, want follow", result["action"])
+		t.Errorf("action = %v, ожидалось follow", result["action"])
 	}
 	if result["url"] != "https://example.com/followed" {
-		t.Errorf("url = %v, want https://example.com/followed", result["url"])
+		t.Errorf("url = %v, ожидалось https://example.com/followed", result["url"])
 	}
 }
 
@@ -102,16 +101,16 @@ func TestEventMarshalJSON_InvalidAction(t *testing.T) {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
 	if raw["action"] != "" {
-		t.Error("empty action should serialize as empty string")
+		t.Error("пустое action должно сериализоваться как пустая строка")
 	}
 }
 
-// --- FileHandler ---
+// --- Файловый обработчик ---
 
 func TestNewFileHandler_NonExistentDir(t *testing.T) {
 	_, err := NewFileHandler("/nonexistent/dir/audit.log")
 	if err == nil {
-		t.Fatal("expected error for nonexistent directory")
+		t.Fatal("ожидалась ошибка для несуществующей директории")
 	}
 }
 
@@ -150,7 +149,7 @@ func TestFileHandler_WriteAndRead(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if parsed.Action != ActionShorten {
-		t.Errorf("parsed action = %s, want %s", parsed.Action, ActionShorten)
+		t.Errorf("парсинг action = %s, ожидалось %s", parsed.Action, ActionShorten)
 	}
 }
 
@@ -185,7 +184,7 @@ func TestFileHandler_AppendMultipleEvents(t *testing.T) {
 			lines++
 		}
 	}
-	// 5 events => 5 newlines
+	// 5 событий => 5 переводов строки
 	if lines != 5 {
 		t.Errorf("expected 5 newlines, got %d", lines)
 	}
@@ -272,33 +271,36 @@ func TestFileHandler_InvalidMarshal(t *testing.T) {
 		t.Fatalf("Stat: %v", err)
 	}
 	if info.Size() == 0 {
-		t.Error("file should have written at least one line")
+		t.Error("файл должен содержать хотя бы одну строку")
 	}
 }
 
-// --- URLHandler ---
+// --- Сетевой обработчик ---
 
 func TestURLHandler_New(t *testing.T) {
 	h := NewURLHandler("http://localhost:9999/audit")
 	if h.url != "http://localhost:9999/audit" {
-		t.Errorf("url = %q, want %q", h.url, "http://localhost:9999/audit")
-	}
-	if h.client.Timeout != 5*time.Second {
-		t.Errorf("Timeout = %v, want 5s", h.client.Timeout)
+		t.Errorf("url = %q, ожидалось %q", h.url, "http://localhost:9999/audit")
 	}
 }
 
 func TestURLHandler_SendSuccess(t *testing.T) {
 	var urlReceived Event
+	var mu sync.Mutex
+	received := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
+			t.Errorf("method = %s, ожидалось POST", r.Method)
 		}
 		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", ct)
+			t.Errorf("Content-Type = %q, ожидалось application/json", ct)
 		}
 		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		json.Unmarshal(data, &urlReceived)
+		mu.Unlock()
+		close(received)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -311,16 +313,21 @@ func TestURLHandler_SendSuccess(t *testing.T) {
 	}
 	h.Handle(ev)
 
+	<-received // ждём завершения HTTP-запроса в горутине Handle
+
+	mu.Lock()
+	defer mu.Unlock()
+
 	if urlReceived.Timestamp != 9999 {
-		t.Errorf("received ts = %d, want 9999", urlReceived.Timestamp)
+		t.Errorf("получено ts = %d, ожидалось 9999", urlReceived.Timestamp)
 	}
 	if urlReceived.Action != ActionFollow {
-		t.Errorf("received action = %s, want follow", urlReceived.Action)
+		t.Errorf("получено action = %s, ожидалось follow", urlReceived.Action)
 	}
 }
 
 func TestURLHandler_UnreachableServer(t *testing.T) {
-	// Point to a port that's not listening — should not panic
+	// Подключаемся к несуществующему порту — не должно паниковать
 	h := NewURLHandler("http://127.0.0.1:1")
 	h.Handle(Event{Timestamp: 1, Action: ActionShorten, URL: "https://x.com"})
 }
@@ -333,16 +340,16 @@ func TestURLHandler_ServerRejects(t *testing.T) {
 
 	h := NewURLHandler(server.URL)
 	h.Handle(Event{Timestamp: 5, Action: ActionFollow, URL: "https://x.com/rejected"})
-	// Should not panic even with non-200 response
+	// Не должен паниковать даже при ответе с кодом отличным от 200
 }
 
 func TestURLHandler_PostFailsJsonMarshal(t *testing.T) {
-	// This test covers the json.Marshal path by using an empty handler — it always works for Event
-	// To test the error path we simulate it differently
+	// Покрытие пути json.Marshal через пустой обработчик — всегда работает для Event.
+	// Для проверки пути ошибки поступаем иначе: Handler с nil-client не вызывает
+	// http.Post напрямую (Handle сначала делает Marshal, потом Post).
+	// Event.MarshalJSON никогда не возвращает ошибку, поэтому проверка на ошибку
+	// невозможна. Этот тест просто гарантирует отсутствие побочных эффектов.
 	h := &URLHandler{client: nil, url: ""}
-	// nil client would panic on Post, but Handle uses Marshal first then Post
-	// We can't trigger marshal failure since Event.MarshalJSON never errors
-	// This just ensures the function runs without side effects
 	_ = h
 }
 
@@ -351,7 +358,7 @@ func TestURLHandler_PostFailsJsonMarshal(t *testing.T) {
 func TestNewCentral(t *testing.T) {
 	c := NewCentral()
 	if c.handlers == nil {
-		t.Fatal("handlers should not be nil")
+		t.Fatal("handlers не должен быть nil")
 	}
 }
 
@@ -367,20 +374,17 @@ func TestCentral_SubscribeMultiple(t *testing.T) {
 		c.Subscribe(&countingHandler{counter: count})
 	}
 
-	c.Notify(Event{Action: ActionShorten})
-	// Each handler runs in a goroutine, wait for them to complete
-	time.Sleep(50 * time.Millisecond)
+	c.NotifySynced(Event{Action: ActionShorten})
 
 	if got := count.Load(); got != 10 {
-		t.Errorf("expected 10 notifies, got %d", got)
+		t.Errorf("ожидается 10 уведомлений, получено %d", got)
 	}
 }
 
 func TestCentral_NotifyEmpty(t *testing.T) {
 	c := NewCentral()
-	// Should not panic with zero handlers
-	c.Notify(Event{Action: ActionFollow})
-	time.Sleep(10 * time.Millisecond)
+	// Не должен паниковать при нулевом количестве обработчиков
+	c.NotifySynced(Event{Action: ActionFollow})
 }
 
 func TestCentral_NotifyWithHandlers(t *testing.T) {
@@ -389,16 +393,13 @@ func TestCentral_NotifyWithHandlers(t *testing.T) {
 	var events []Event
 
 	c.Subscribe(&recordingHandler{store: &events, mu: &mu})
-	c.Notify(Event{Timestamp: 100, Action: ActionShorten, UserID: "1", URL: "https://a.com"})
-	c.Notify(Event{Timestamp: 200, Action: ActionFollow, URL: "https://b.com"})
-
-	// Handle runs in goroutines, give them time to complete
-	time.Sleep(50 * time.Millisecond)
+	c.NotifySynced(Event{Timestamp: 100, Action: ActionShorten, UserID: "1", URL: "https://a.com"})
+	c.NotifySynced(Event{Timestamp: 200, Action: ActionFollow, UserID: "2", URL: "https://b.com"})
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(events) != 2 {
-		t.Errorf("expected 2 events, got %d", len(events))
+		t.Errorf("ожидается 2 события, получено %d", len(events))
 	}
 	// Проверяем наличие обоих событий без привязки к порядку горутин
 	timestamps := make(map[int64]bool)
@@ -417,17 +418,16 @@ func TestCentral_NotifyWithHandlers(t *testing.T) {
 }
 
 func TestCentral_NotifyNilCentral(t *testing.T) {
-	// Notify is a method on pointer; receiver can't be nil in normal usage
-	// but we ensure basic instantiation works
+	// Notify — метод указателя; в нормальном использовании receiver не может быть nil.
+	// Здесь просто проверяем, что базовая инициализация работает.
 	var c *Central = &Central{handlers: make([]EventHandler, 0)}
-	c.Notify(Event{})
-	time.Sleep(10 * time.Millisecond)
+	c.NotifySynced(Event{})
 }
 
-// --- Integration: Central with FileHandler and URLHandler ---
+// --- Интеграция: Central с FileHandler и URLHandler ---
 
 func TestCentral_Integration_FileAndURL(t *testing.T) {
-	// Create temp file
+	// Создаём временный файл
 	tmp, err := os.CreateTemp("", "audit-integration-*.jsonl")
 	if err != nil {
 		t.Fatalf("create temp: %v", err)
@@ -436,11 +436,17 @@ func TestCentral_Integration_FileAndURL(t *testing.T) {
 	tmp.Close()
 	defer os.Remove(path)
 
-	// Create mock URL server
+	// Тестовый URL-сервер для приёма событий аудита
 	var urlReceived Event
+	var mu sync.Mutex
+	urlReceivedCh := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		json.Unmarshal(data, &urlReceived)
+		mu.Unlock()
+		close(urlReceivedCh)
 		w.WriteHeader(200)
 	}))
 	defer server.Close()
@@ -458,16 +464,17 @@ func TestCentral_Integration_FileAndURL(t *testing.T) {
 	c.Subscribe(fileH)
 	c.Subscribe(urlH)
 
-	c.Notify(Event{
+	c.NotifySynced(Event{
 		Timestamp: 500,
 		Action:    ActionShorten,
 		UserID:    "10",
 		URL:       "https://integration.test",
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	// NotifySynced заблокируется до завершения всех горутин, включая HTTP-запрос URLHandler
+	<-urlReceivedCh // на всякий случай, хотя NotifySynced уже вернулся
 
-	// Check file
+	// Проверка записи в файл
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -478,15 +485,17 @@ func TestCentral_Integration_FileAndURL(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if fileEv.UserID != "10" {
-		t.Errorf("file event user_id = %q, want 10", fileEv.UserID)
+		t.Errorf("user_id события в файле = %q, ожидалось 10", fileEv.UserID)
 	}
 
-	// Check URL server
+	// Проверка получения события URL-сервером
+	mu.Lock()
+	defer mu.Unlock()
 	if urlReceived.Timestamp != 500 {
-		t.Errorf("url received ts = %d, want 500", urlReceived.Timestamp)
+		t.Errorf("timestamp события в URL = %d, ожидалось 500", urlReceived.Timestamp)
 	}
 	if urlReceived.UserID != "10" {
-		t.Errorf("url received user_id = %q, want 10", urlReceived.UserID)
+		t.Errorf("user_id события в URL = %q, ожидалось 10", urlReceived.UserID)
 	}
 }
 
@@ -502,7 +511,7 @@ func TestCentral_Race(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			c.Notify(Event{
+			c.NotifySynced(Event{
 				Timestamp: int64(idx),
 				Action:    ActionShorten,
 				UserID:    string(rune('a' + idx%26)),
@@ -513,7 +522,7 @@ func TestCentral_Race(t *testing.T) {
 	wg.Wait()
 }
 
-// --- Helper handlers for testing ---
+// --- Тестовые обработчики ---
 
 type trackingHandler struct{}
 

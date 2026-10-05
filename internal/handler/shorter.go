@@ -347,7 +347,7 @@ func SigninCookieForTest(cookieKey, payload string) string {
 	return signinCookie(cookieKey, payload)
 }
 
-// VerifyCookie проверяет HMAC-SHA256 подпись и возвращает payload при успешной валидации.
+// verifyCookie проверяет HMAC-SHA256 подпись и возвращает payload при успешной валидации.
 // Используется Internally в AuthMiddleware для проверки куки пользователя.
 func verifyCookie(cookieKey, payload, signature string) (string, error) {
 	expectedSig := signinCookie(cookieKey, payload)
