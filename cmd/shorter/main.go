@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof"
 	"time"
 
+	"study-go.ru/cho/eto/internal/audit"
 	config "study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/handler"
 	internalMiddleware "study-go.ru/cho/eto/internal/middleware"
@@ -33,12 +35,29 @@ func main() {
 	// загружаем данные из файла (если существует)
 	store := storage.New(config.FileName)
 
+	// Аудит-центр: создаём и подписываем наблюдателей по конфигурции
+	central := audit.NewCentral()
+
+	if config.AuditFile != "" {
+		fileH, err := audit.NewFileHandler(config.AuditFile)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to create audit file handler")
+		} else {
+			central.Subscribe(fileH)
+			defer fileH.Close()
+		}
+	}
+
+	if config.AuditURL != "" {
+		urlH := audit.NewURLHandler(config.AuditURL)
+		central.Subscribe(urlH)
+	}
+
 	// Инициализируем БД один раз
 	db, err := initDB(config.DatabaseDSN)
 	if err != nil {
 		logrus.Error("Failed to initialize database:", err)
 	}
-
 
 	r := chi.NewRouter()
 	// глобальные middleware
@@ -54,12 +73,17 @@ func main() {
 	r.Post("/ping", handler.ShorterPing(db))
 	r.Post("/login", handler.ShorterLoginPost(db))
 	// защищённые маршруты — требуют авторизованную куку
-	r.Handle("/", authMiddleware(handler.ShorterPost(store)))
-	r.Handle("/api/shorten", authMiddleware(handler.ShorterPost(store)))
-	r.Handle("/api/shorten/batch", authMiddleware(handler.ShorterBatchPost(store)))
+	r.Handle("/", authMiddleware(handler.ShorterPost(store, central)))
+	r.Handle("/api/shorten", authMiddleware(handler.ShorterPost(store, central)))
+	r.Handle("/api/shorten/batch", authMiddleware(handler.ShorterBatchPost(store, central)))
 	r.Handle("/api/user/urls", authMiddleware(handler.ShorterUserURLsGet(db)))
-	r.Get("/{id}", handler.ShorterGet(store))
+	r.Get("/{id}", handler.ShorterGet(store, central))
 	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(store)).ServeHTTP)
+
+	// pprof — маршруты для профилирования (требуют авторизацию через AuthMiddleware)
+	// Типа так же, как и другие методы и с той же кукой. Можно еще как-то на другой порт, не смотрел как, попробовать если понадобится.
+	r.Handle("/debug/pprof/*", authMiddleware(handler.PprofHandler(store, central)))
+	r.Get("/debug/pprof/", authMiddleware(handler.PprofHandler(store, central)).ServeHTTP)
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

@@ -1,3 +1,10 @@
+// Package storage предоставляет слой хранения для URL-сократителя.
+//
+// Storage поддерживает два бэкенда:
+//   - PostgreSQL — при указании DATABASE_DSN и успешном подключении
+//   - JSON-файл — fallback при отсутствии БД
+//
+// Данные загружаются в in-memory map при старте и синхронизируются с выбраным бэкендом.
 package storage
 
 import (
@@ -16,7 +23,13 @@ import (
 	"study-go.ru/cho/eto/internal/config"
 )
 
-// Entry — одна запись URL-сокращения.
+// Entry — одна запись сокращённой ссылки в хранилище.
+//
+// Поля:
+//   - UUID — уникальный идентификатор записи (числовой, в строковом представлении)
+//   - ShortURL — короткая ссылка (например, "http://short.ru/a1b2c3d4")
+//   - OriginalURL — оригинальная (длинная) ссылка
+//   - UserID — идентификатор пользователя, создавшего ссылку
 type Entry struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
@@ -25,7 +38,13 @@ type Entry struct {
 	DeletedFlag bool   `db:"is_deleted"`
 }
 
-// Storage управляет in-memory хранилищем и синхронизацией с файлом или БД.
+// Storage управляет in-memory хранилищем и синхронизацией с JSON-файлом или PostgreSQL.
+//
+// Поддерживает два режима работы:
+//   - PostgreSQL — при заданном DATABASE_DSN и успешном подключении; все операции идут в БД.
+//   - Файловый — fallback; данные хранятся в JSON-файле, чтение/запись атомарные через temp-file+rename.
+//
+// При создании (New) данные загружаются из выбранного бэкенда в in-memory мапы.
 type Storage struct {
 	mu       sync.Mutex
 	store    map[string]string // shortURL -> originalURL
@@ -39,10 +58,17 @@ type Storage struct {
 	useDB bool
 }
 
-// New создаёт Storage.
-// Если DATABASE_DSN указан и подключение к PostgreSQL успешно,
-// используются только данные из таблицы url_srv (файл не используется).
-// В противном случае используется файловое хранилище.
+// New создаёт Storage с выбранным бэкендом хранения.
+//
+// Логика выбора бэкенда:
+//  1. Если config.DatabaseDSN не пустой и подключение к PostgreSQL успешно — используется БД.
+//     Все данные загружаются из таблицы url_srv в in-memory мапы.
+//  2. Иначе — используется файловое хранилище; данные загружаются из filePath.
+//
+// Параметры:
+//   - filePath — путь к JSON-файлу (используется только при файловом режиме).
+//
+// Возвращает готовый к использованию *Storage.
 func New(filePath string) *Storage {
 	s := &Storage{
 		store:    make(map[string]string),
@@ -206,7 +232,10 @@ func (s *Storage) saveToDB(uuid, shortURL, originalURL string, usrID int) error 
 	return nil
 }
 
-// PutUnique сохраняет новую запись, возвращая ошибку pq.Error при дубликате original_url.
+// PutUnique сохраняет новую запись URL-сокращения.
+//
+// Возвращает pq.Error с кодом "23505" (unique_violation), если original_url уже существует.
+// В файловом режиме ошибка возвращается через save(); в БД — через INSERT конфликт уникальности.
 func (s *Storage) PutUnique(uuid, shortURL, originalURL string, usrID int) error {
 	if s.useDB {
 		return s.saveToDB(uuid, shortURL, originalURL, usrID)
@@ -215,7 +244,9 @@ func (s *Storage) PutUnique(uuid, shortURL, originalURL string, usrID int) error
 	}
 }
 
-// GetByOriginalURL возвращает short_url для заданного original_url.
+// GetByOriginalURL возвращает short_url для заданного original_url из in-memory мапы.
+//
+// Возвращает (shortURL, true) при нахождении или ("", false) если URL не найден.
 func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,8 +258,15 @@ func (s *Storage) GetByOriginalURL(originalURL string) (string, bool) {
 	return "", false
 }
 
-// Get возвращает оригинальный URL по короткому ID и флаг удаления записи.
-// В файловом хранилище механизм удаления отсутствует, поэтому флаг всегда false.
+// Get возвращает оригинальный URL по короткому ID и флаг удаления.
+//
+// В PostgreSQL режиме выполняется запрос к таблице url_srv.
+// В файловом режиме механизм удаления отсутствует, deleted всегда false.
+//
+// Возвращает:
+//   - originalURL — найденный оригинальный URL
+//   - deleted — true если запись помечена как удалённая (только для БД)
+//   - err — ошибка запроса, если возникла
 func (s *Storage) Get(shortID string) (originalURL string, deleted bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,7 +316,10 @@ func selectUrl(s *Storage, id string) (string, bool, error) {
 	}
 }
 
-// NextID возвращает следующий доступный номер и инкрементирует счётчик.
+// NextID возвращает следующий доступный номер-идентификатор и инкрементирует внутренний счётчик.
+//
+// Используется как UUID для новых записей. Безопасен для конкурентного доступа благодаря мьютексу.
+// Возвращает строковое представление числа (например, "0", "1", "2").
 func (s *Storage) NextID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -287,6 +328,11 @@ func (s *Storage) NextID() string {
 	return fmt.Sprintf("%d", id)
 }
 
+// DeleteUrls выполняет мягкое удаление (soft delete) записей для заданного пользователя.
+//
+// Помечает строки в таблице url_srv, где usr_id совпадает и short_url совпадает
+// с любым из переданных URL (через PostgreSQL regex). Возвращает ошибку выполнения запроса.
+// Используется хэндлером DeleteURLs; вызывается в отдельной горутине.
 func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) error {
 	// Объединяем через разделитель "|"
 	suffix := strings.Join(forDel, "|")

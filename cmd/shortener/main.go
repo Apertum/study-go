@@ -61,7 +61,8 @@ func main() {
 	// читаем строку из консоли
 	long, err := reader.ReadString('\n')
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Ошибка чтения из консоли")
+		os.Exit(1)
 	}
 	long = strings.TrimSuffix(long, "\n")
 
@@ -73,8 +74,8 @@ func main() {
 	req.URL = long
 	data, err := json.Marshal(req)
 	if err != nil {
-		logrus.WithError(err).Error("Ошибка сериализации данных запроса")
-		panic(err)
+		logrus.WithError(err).Fatal("Ошибка сериализации данных запроса")
+		os.Exit(1)
 	}
 
 	// добавляем HTTP-клиент
@@ -84,14 +85,16 @@ func main() {
 	// тело должно быть источником потокового чтения io.Reader
 	request, err := http.NewRequest(http.MethodPost, addr.String(), strings.NewReader(string(data)))
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Ошибка создания HTTP-запроса")
+		os.Exit(1)
 	}
 	// в заголовках запроса указываем кодировку
 	request.Header.Add("Content-Type", "application/json")
 	// отправляем запрос и получаем ответ
 	response, err := client.Do(request)
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Ошибка отправки HTTP-запроса")
+		os.Exit(1)
 	}
 	// выводим код ответа
 	logrus.Info("Статус-код ", response.Status)
@@ -99,7 +102,8 @@ func main() {
 	// читаем поток из тела ответа
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Ошибка чтения тела ответа")
+		os.Exit(1)
 	}
 	// и печатаем его
 	logrus.Info(string(body))
