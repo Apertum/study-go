@@ -25,7 +25,7 @@ func main() {
 	var cntStr string = "postgres://postgres:postgres@localhost:5432/local_dev?sslmode=disable"
 	db, err := sql.Open("postgres", cntStr)
 	if err != nil {
-		panic(err)
+		logrus.Fatalf("failed to open database: %v", err)
 	}
 	defer db.Close()
 
@@ -35,7 +35,7 @@ func main() {
 	var id int64
 	err = row0.Scan(&id) // разбираем результат
 	if err != nil {
-		panic(err)
+		logrus.Fatalf("failed to scan count: %v", err)
 	}
 	fmt.Println("query res = " + strconv.FormatInt(id, 10))
 
@@ -48,15 +48,15 @@ func main() {
 	// порядок переменных должен соответствовать порядку колонок в запросе
 	err = row.Scan(&title, &likes, &comdis)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		panic(err)
+		logrus.Fatalf("failed to scan video data: %v", err)
 	} else {
-		fmt.Printf("%s | %d | %t \r\n", title, *likes, *comdis)
+		logrus.Info("DB to scan video data is OK\n", title, *likes, *comdis)
 	}
 
 	var list []Video
 	list, err = QueryVideos(context.Background(), db, 5)
 	if err != nil {
-		panic(err)
+		logrus.Fatalf("failed to query videos: %v", err)
 	} else {
 		for _, v := range list {
 			length := 4
@@ -78,8 +78,7 @@ func main() {
         "views" INTEGER
       )`)
 	if err != nil {
-		logrus.Fatal(err)
-		panic(err)
+		logrus.Fatalf("failed to create table: %v", err)
 	}
 
 	if 1 == 2 {

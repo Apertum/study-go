@@ -60,8 +60,8 @@ func setupShorterRouterWithStorage(s *storage.Storage) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.GzipMiddleware)
 	r.Use(testAuthMiddleware)
-	r.Post("/", ShorterPost(s))
-	r.Get("/{id}", ShorterGet(s))
+	r.Post("/", ShorterPost(s, nil))
+	r.Get("/{id}", ShorterGet(s, nil))
 	return r
 }
 

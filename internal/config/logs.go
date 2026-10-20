@@ -15,23 +15,26 @@ func LogsInit() {
 	// установим уровень логирования
 	logrus.SetLevel(logrus.TraceLevel)
 
+	// логи выводим в stderr, чтобы не мешать stdout (бенчмарки, тесты). Зачем? todo посмотреть куда оно всё идёт
+	logrus.SetOutput(os.Stderr)
+
 	// установим форматирование логов для консоли: 2026-07-12T12:00:00Z [info] "msg"
 	logrus.SetFormatter(&consoleFormatter{})
 
 	logFile := "logs/app.log"
 	// 1. Создаем папку для логов, если её нет
 	err := os.MkdirAll("./logs", 0755)
-    if err != nil {
+	if err != nil {
 		logrus.WithError(err).Fatal("Не удалось создать директорию для логов")
 	}
 
 	// 2. Настраиваем lumberjack для ротации логов (лимит 10MB на файл)
 	logger := &lumberjack.Logger{
-		Filename:   logFile,
-		MaxSize:    1, // максимум 1 МБ на файл
-		MaxAge:     7, // хранить до 7 старых файлов
-		Compress:   true, // сжимать старые файлы
-		LocalTime:  true, // использовать локальное время в именах
+		Filename:  logFile,
+		MaxSize:   1,    // максимум 1 МБ на файл
+		MaxAge:    7,    // хранить до 7 старых файлов
+		Compress:  true, // сжимать старые файлы
+		LocalTime: true, // использовать локальное время в именах
 	}
 	if err := logger.Close(); err != nil {
 		logrus.WithError(err).Warn("Ошибка при инициализации lumberjack")
@@ -86,5 +89,3 @@ func (h *jsonFileHook) Fire(entry *logrus.Entry) error {
 	_, err = h.Writer.Write(bytes)
 	return err
 }
-
-

@@ -1,3 +1,18 @@
+// Package handler предоставляет HTTP-хендлеры и middleware для URL-сократителя.
+//
+// Экспортируемые хендлеры:
+//   - ShorterPost — POST /  и POST /api/shorten
+//   - ShorterBatchPost — POST /api/shorten/batch
+//   - ShorterGet — GET /{id}
+//   - ShorterPing — POST /ping
+//   - ShorterLoginPost — POST /login
+//   - ShorterUserURLsGet — GET /api/user/urls
+//
+// Экспортируемое middleware:
+//   - AuthMiddleware — проверка HMAC-подписанной куки user_id
+//
+// Экспортируемые утилиты:
+//   - SigninCookieForTest — генерация HMAC-подписи для тестов
 package handler
 
 import (
@@ -17,6 +32,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
+	"study-go.ru/cho/eto/internal/audit"
 	"study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/storage"
 )
@@ -31,9 +47,29 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// ShorterPost — обработчик POST /
-// Принимает URL в теле запроса (JSON или raw), сохраняет, возвращает короткий ID
-func ShorterPost(s *storage.Storage) http.HandlerFunc {
+// ShorterPost обрабатывает POST-запросы на пути / и /api/shorten.
+//
+// Принимает URL в теле запроса (JSON с полем url или raw-строка), сохраняет
+// сокращённую версию и возвращает 201 Created с коротким ID.
+// Если original_url уже существует, возвращает 409 Conflict с существующим short_url.
+//
+// Требует авторизацию через HMAC-подписанную куку user_id (проверяется AuthMiddleware).
+//
+// Пример JSON-запроса:
+//
+//	curl -X POST http://localhost:8080/api/shorten \
+//	  -b "user_id=1:signature" \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"url":"https://example.com/very/long/path"}'
+//
+// Ответ 201:
+//
+//	{"uuid":"0","short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/very/long/path"}
+//
+// Ответ 409 (дубликат):
+//
+//	{"short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/very/long/path"}
+func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -84,6 +120,17 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 			return
 		}
 
+		// Аудит после успешного сохранения
+		if central != nil {
+			userIDStr := strconv.FormatInt(int64(usrID), 10)
+			central.Notify(audit.Event{
+				Timestamp: time.Now().Unix(),
+				Action:    audit.ActionShorten,
+				UserID:    userIDStr,
+				URL:       longURL,
+			})
+		}
+
 		// возвращаем короткий ID
 		w.Header().Set("Content-Type", "application/json")
 		// Порядок важен: WriteHeader отправляет заголовки клиенту.
@@ -98,8 +145,24 @@ func ShorterPost(s *storage.Storage) http.HandlerFunc {
 	}
 }
 
-// ShorterBatchPost — обработчик POST /api/shorten/batch
-func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
+// ShorterBatchPost обрабатывает POST-запросы на пути /api/shorten/batch.
+//
+// Принимает массив объектов {correlation_id, url}, для каждого создаёт
+// сокращённую ссылку и возвращает массив результатов с 201 Created.
+//
+// Требует авторизацию через HMAC-подписанную куку user_id (проверяется AuthMiddleware).
+//
+// Пример запроса:
+//
+//	curl -X POST http://localhost:8080/api/shorten/batch \
+//	  -b "user_id=1:signature" \
+//	  -H "Content-Type: application/json" \
+//	  -d '[{"correlation_id":"req-1","url":"https://example.com/one"},{"correlation_id":"req-2","url":"https://example.com/two"}]'
+//
+// Ответ 201:
+//
+//	[{"correlation_id":"req-1","uuid":"0","short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/one"}]
+func ShorterBatchPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -132,6 +195,7 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 		}
 
 		responses := make([]ResponseItem, 0, len(reqs))
+		userIDStr := strconv.FormatInt(int64(usrID), 10)
 		for _, req := range reqs {
 			shortID := config.BaseURL + generateID()
 			uuid := s.NextID()
@@ -169,6 +233,16 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 				ShortURL:      shortID,
 				OriginalURL:   req.URL,
 			})
+
+			// Аудит после успешного сохранения каждого URL в батче
+			if central != nil {
+				central.Notify(audit.Event{
+					Timestamp: time.Now().Unix(),
+					Action:    audit.ActionShorten,
+					UserID:    userIDStr,
+					URL:       req.URL,
+				})
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -177,9 +251,21 @@ func ShorterBatchPost(s *storage.Storage) http.HandlerFunc {
 	}
 }
 
-// ShorterGet — обработчик GET /{id}
-// Возвращает оригинальный URL по короткому ID
-func ShorterGet(s *storage.Storage) http.HandlerFunc {
+// ShorterGet обрабатывает GET-запросы на пути /{id}.
+//
+// Возвращает 307 Temporary Redirect на оригинальный URL по короткому ID.
+// Если запись удалена, возвращает 410 Gone. Если не найдена — 404 Not Found.
+// Не требует авторизации.
+//
+// Пример запроса:
+//
+//	curl -v http://localhost:8080/a1b2c3d4
+//
+// Ответ 307:
+//
+//	HTTP/1.1 307 Temporary Redirect
+//	Location: https://example.com/very/long/path
+func ShorterGet(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
@@ -194,15 +280,35 @@ func ShorterGet(s *storage.Storage) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGone)
 			json.NewEncoder(w).Encode("{\"url\": \"Gone\"}")
-		} else {
-			// перенаправляем на оригинальный URL
-			http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
+			return
 		}
+
+		// Аудит прохождения по ссылке
+		if central != nil {
+			central.Notify(audit.Event{
+				Timestamp: time.Now().Unix(),
+				Action:    audit.ActionFollow,
+				URL:       longURL,
+			})
+		}
+
+		// перенаправляем на оригинальный URL
+		http.Redirect(w, r, longURL, http.StatusTemporaryRedirect)
 	}
 }
 
-// ShorterPing — обработчик GET /ping
-// Проверяет соединение с PostgreSQL базой данных
+// ShorterPing обрабатывает POST-запросы на пути /ping.
+//
+// Проверяет доступность PostgreSQL-базы данных через PingContext.
+// Не требует авторизации.
+//
+// Пример запроса:
+//
+//	curl http://localhost:8080/ping
+//
+// Ответ 200:
+//
+//	OK
 func ShorterPing(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if db == nil {
@@ -233,12 +339,16 @@ func signinCookie(cookieKey, payload string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// SigninCookieForTest — экспортированная версия для использования в тестах.
+// SigninCookieForTest генерирует HMAC-SHA256 подпись для заданных cookieKey и payload.
+//
+// Экспортирована исключительно для использования в тестах.
+// В production используется неприватная signinCookie().
 func SigninCookieForTest(cookieKey, payload string) string {
 	return signinCookie(cookieKey, payload)
 }
 
-// verifyCookie проверяет HMAC-SHA256 подпись. Возвращает payload, если подпись валидна, иначе ошибку.
+// verifyCookie проверяет HMAC-SHA256 подпись и возвращает payload при успешной валидации.
+// Используется Internally в AuthMiddleware для проверки куки пользователя.
 func verifyCookie(cookieKey, payload, signature string) (string, error) {
 	expectedSig := signinCookie(cookieKey, payload)
 	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
@@ -247,10 +357,16 @@ func verifyCookie(cookieKey, payload, signature string) (string, error) {
 	return payload, nil
 }
 
-// AuthMiddleware — middleware для проверки авторизации через куку user_id.
-// Если куки нет — 401. Если подпись невалидна — 401.
-// Если пользователь не найден в БД — 403.
-// Если всё ок — кладёт user ID в контекст и передаёт запрос дальше.
+// AuthMiddleware — HTTP-middleware для проверки авторизации через куку user_id.
+//
+// Работает по следующему алгоритму:
+//  1. Читает куку user_id; если отсутствует — возвращает 401 Unauthorized.
+//  2. Извлекает payload (user ID) и HMAC-SHA256 подпись из куки в формате "payload:signature".
+//  3. Проверяет валидность подписи через HMAC-SHA256. Если не совпадает — 401 Unauthorized.
+//  4. Проверяет существование пользователя в БД; если не найден — 403 Forbidden.
+//  5. В случае успеха кладёт user ID в контекст и передаёт запрос дальше.
+//
+// Применяется ко всем защищённым маршрутам в main.go.
 func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,11 +417,24 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 	}
 }
 
-
-// ShorterLoginPost — обработчик POST /login
-// Принимает JSON {"usr_name": "someName"}, ищет пользователя по usr_name в БД,
-// если не находит — создаёт нового (paswd пустой).
-// Выдаёт симметрично подписанную куку с user ID.
+// ShorterLoginPost обрабатывает POST-запросы на пути /login.
+//
+// Принимает JSON {"usr_name": "someName"}, ищет пользователя по usr_name в БД.
+// Если не найден — создаёт нового (paswd пустой). Выдаёт HMAC-SHA256-подписанную куку
+// с форматом "user_id:{payload}:{signature}", где payload — числовой ID пользователя.
+// Кука HttpOnly, максимальный MaxAge — 30 дней.
+//
+// Пример запроса:
+//
+//	curl -X POST http://localhost:8080/login \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"usr_name":"alice"}'
+//
+// Ответ 200:
+//
+//	{"user_id":"42"}
+//
+// + Set-Cookie: user_id=42:hmac_sha256_signature; Path=/; HttpOnly; Max-Age=2592000
 func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -367,9 +496,19 @@ func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// ShorterUserURLsGet — обработчик GET /api/user/urls
-// Возвращает все сокращённые пользователем URL из БД.
-// Если URL нет — 204 No Content.
+// ShorterUserURLsGet обрабатывает GET-запросы на пути /api/user/urls.
+//
+// Возвращает все сокращённые текущим пользователем URL из БД в виде JSON-массива.
+// Требует авторизацию через AuthMiddleware.
+// Если URL нет — возвращает 204 No Content.
+//
+// Пример запроса:
+//
+//	curl http://localhost:8080/api/user/urls -b "user_id=1:signature"
+//
+// Ответ 200:
+//
+//	[{"short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/one"}]
 func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// извлекаем usrID из контекста (установлен AuthMiddleware)
@@ -422,6 +561,22 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// DeleteURLs обрабатывает DELETE-запросы на пути /api/user/urls.
+//
+// Принимает JSON-массив short_url для удаления и помечает их как удалённые
+// в асинхронной горутине. Возвращает 202 Accepted сразу после запуска.
+// Требует авторизацию через AuthMiddleware.
+//
+// Пример запроса:
+//
+//	curl -X DELETE http://localhost:8080/api/user/urls \
+//	  -b "user_id=1:signature" \
+//	  -H "Content-Type: application/json" \
+//	  -d '["http://short.ru/a1b2c3d4","http://short.ru/e5f6g7h8"]'
+//
+// Ответ 202:
+//
+//	{"done":  "OK"}
 func DeleteURLs(s *storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 

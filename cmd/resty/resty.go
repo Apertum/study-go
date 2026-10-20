@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/sirupsen/logrus"
 )
 
 type User struct {
@@ -22,7 +24,8 @@ func main() {
 
 	_, err := client.R().SetResult(&users).Get(url)
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Error: \n", err)
+		os.Exit(1)
 	}
 	var out []string
 	for _, v := range users {
@@ -48,7 +51,8 @@ func resty2() {
 		Post("https://jsonplaceholder.typicode.com/posts")
 
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Error: \n", err)
+		os.Exit(1)
 	}
 	fmt.Println(resp)
 
@@ -59,7 +63,8 @@ func resty2() {
 		Post("https://jsonplaceholder.typicode.com/posts")
 
 	if err != nil {
-		panic(err)
+		logrus.WithError(err).Fatal("Error: \n", err)
+		os.Exit(1)
 	}
 	fmt.Println(resp)
 }

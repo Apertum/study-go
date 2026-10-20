@@ -1,8 +1,9 @@
 module study-go.ru/cho/eto
 
-go 1.26.4
+go 1.26.6
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/golang/mock v1.6.0
@@ -12,11 +13,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
-require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2 // indirect
-	github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
-)
+require go.uber.org/multierr v1.11.0 // indirect
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
