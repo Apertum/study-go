@@ -214,9 +214,8 @@ func (c *Central) Subscribe(h EventHandler) {
 }
 
 // NotifySynced уведомляет всех подписанных наблюдателей о событии и блокирует вызывающий
-// поток до завершения всех Handle-горутин. Возвращённый WaitGroup можно использовать
-// для дополнительной синхронизации после возврата метода.
-func (c *Central) NotifySynced(event Event) sync.WaitGroup {
+// поток до завершения всех Handle-горутин.
+func (c *Central) NotifySynced(event Event) {
 	var wg sync.WaitGroup
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -229,7 +228,6 @@ func (c *Central) NotifySynced(event Event) sync.WaitGroup {
 		}(h)
 	}
 	wg.Wait()
-	return wg
 }
 
 // Notify уведомляет всех подписанных наблюдателей о событии в отдельных горутинах.
