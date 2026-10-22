@@ -9,11 +9,19 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-
 	"strings"
 
 	"github.com/sirupsen/logrus"
 	config "study-go.ru/cho/eto/internal/config"
+)
+
+// Информация о сборке, подставляется при линковке через -ldflags "-X main.buildVersion=... -X main.buildDate=... -X main.buildCommit=...":
+//
+//	go run -ldflags "-X main.buildVersion=v1.0.0 -X main.buildDate=2026-10-22 -X main.buildCommit=abc1234" ./cmd/shortener -addr localhost:8080
+var (
+	buildVersion string = "N/A"
+	buildDate    string = "N/A"
+	buildCommit  string = "N/A"
 )
 
 type NetAddress struct {
@@ -23,6 +31,9 @@ type NetAddress struct {
 
 func init() {
 	config.LogsInit()
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
 }
 
 func (a NetAddress) String() string {
