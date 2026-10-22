@@ -51,3 +51,4 @@ go.work.sum
 /shortener
 /staticlint
 /zip
+*.zip
