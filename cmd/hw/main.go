@@ -59,6 +59,9 @@ func GetAnyClient(url string) {
 	}
 	request.Header.Set("Content-Type", "multipart/form-data")
 	response, err := client.Do(request)
+	if err != nil {
+		log.Fatal(err)
+	}
 	io.Copy(os.Stdout, response.Body)
 	response.Body.Close()
 }

@@ -42,7 +42,11 @@ func TestEventMarshalJSON_WithUserID(t *testing.T) {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
 
-	if int(result["ts"].(float64)) != 12345678 {
+	ts, ok := result["ts"].(float64)
+	if !ok {
+		t.Fatalf("ts имеет тип %T, ожидался float64", result["ts"])
+	}
+	if int(ts) != 12345678 {
 		t.Errorf("ts = %v, ожидалось 12345678", result["ts"])
 	}
 	if result["action"] != "shorten" {
@@ -343,14 +347,13 @@ func TestURLHandler_ServerRejects(t *testing.T) {
 	// Не должен паниковать даже при ответе с кодом отличным от 200
 }
 
-func TestURLHandler_PostFailsJsonMarshal(t *testing.T) {
-	// Покрытие пути json.Marshal через пустой обработчик — всегда работает для Event.
-	// Для проверки пути ошибки поступаем иначе: Handler с nil-client не вызывает
-	// http.Post напрямую (Handle сначала делает Marshal, потом Post).
-	// Event.MarshalJSON никогда не возвращает ошибку, поэтому проверка на ошибку
-	// невозможна. Этот тест просто гарантирует отсутствие побочных эффектов.
-	h := &URLHandler{client: nil, url: ""}
-	_ = h
+func TestURLHandler_PostError(t *testing.T) {
+	// Event.MarshalJSON никогда не возвращает ошибку, поэтому путь ошибки Marshal
+	// тут недоступен. Проверяем соседний путь: ошибку http.Post обработчик обязан
+	// проглотить без паники. client у NewURLHandler заполнен, поэтому нулевые
+	// поля конструировать не нужно.
+	h := NewURLHandler("") // пустой URL приводит к ошибке на первом же шаге запроса
+	h.Handle(Event{Timestamp: 1, Action: ActionShorten})
 }
 
 // --- Central ---

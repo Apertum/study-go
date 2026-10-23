@@ -52,7 +52,6 @@ func resty2() {
 
 	if err != nil {
 		logrus.WithError(err).Fatal("Error: \n", err)
-		os.Exit(1)
 	}
 	fmt.Println(resp)
 
@@ -64,7 +63,6 @@ func resty2() {
 
 	if err != nil {
 		logrus.WithError(err).Fatal("Error: \n", err)
-		os.Exit(1)
 	}
 	fmt.Println(resp)
 }
