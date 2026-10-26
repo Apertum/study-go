@@ -40,7 +40,6 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	// Искать будем везде где типа его быть не должно, как мне кажется.
 	// Пакет без os импортировать не может — ранний выход экономит обход AST.
 	if !importsOS(pass.Pkg) {
 		return nil, nil

@@ -31,9 +31,6 @@ type NetAddress struct {
 
 func init() {
 	config.LogsInit()
-	fmt.Printf("Build version: %s\n", buildVersion)
-	fmt.Printf("Build date: %s\n", buildDate)
-	fmt.Printf("Build commit: %s\n", buildCommit)
 }
 
 func (a NetAddress) String() string {
@@ -55,6 +52,9 @@ func (a *NetAddress) Set(s string) error {
 }
 
 func main() {
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
 	addr := new(NetAddress)
 	// если интерфейс не реализован,
 	// здесь будет ошибка компиляции

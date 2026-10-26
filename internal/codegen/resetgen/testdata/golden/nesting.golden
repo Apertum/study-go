@@ -17,4 +17,12 @@ func (o *Outer) Reset() {
 	if o.next != nil {
 		o.next.Reset()
 	}
+	if o.once != nil {
+		(*o.once).Reset()
+	}
+	if o.deep != nil {
+		if *o.deep != nil {
+			(*o.deep).Reset()
+		}
+	}
 }

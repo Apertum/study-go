@@ -170,7 +170,7 @@ func main() {
 ╚═══════════════════════════════╝
     `)
 
-	// Овердохрена. Сложим группами. Самописный последним.
+	// Количество анализа достаточно большое. Для наглядности сложим группами. Самописный последним.
 	analyzers := toolAnalyzers
 	analyzers = append(analyzers, modernize.Suite...)
 	analyzers = append(analyzers, staticcheckFlatten(

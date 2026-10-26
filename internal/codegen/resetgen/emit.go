@@ -5,15 +5,125 @@ import (
 	"fmt"
 	"go/ast"
 	"go/format"
-	"go/token"
 	"path"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 
 	"golang.org/x/tools/go/packages"
 )
+
+// Формы выходного кода: файл целиком, один метод и один оператор сброса. Итоговые отступы и
+// переносы выравнивает format.Source, поэтому шаблон описывает только синтаксис.
+const (
+	// fileFormat — форма выходного файла: преамбула, пакет, импорты и методы в порядке объявления.
+	fileFormat = `{{- define "file" -}}
+` + GeneratedHeader + `
+
+package {{ .Package }}
+{{ with .Imports }}
+import (
+{{- range . }}
+	{{ printf "%q" . }}
+{{- end }}
+)
+{{- end }}
+{{ range .Methods }}
+{{ template "method" . }}
+{{ end }}
+{{- end -}}`
+
+	// methodFormat — форма метода: func (получатель *Тип) Reset() с проверкой nil-получателя
+	// первым оператором, далее операторы полей в порядке объявления.
+	methodFormat = `{{- define "method" -}}
+func ({{ .Receiver }} *{{ .Type }}) Reset() {
+	if {{ .Receiver }} == nil {
+		return
+	}
+{{- range .Statements }}
+	{{ template "statement" . }}
+{{- end }}}
+{{- end -}}`
+
+	// statementFormat — форма оператора сброса: по ветке на вид поля из таблицы правил, включая
+	// вложенные проверки указателей. Имена веток совпадают с константами kind*. Операнд перед срезом,
+	// проверкой типа и вызовом метода берётся из operand: без скобок они применились бы к указателю.
+	statementFormat = `{{- define "statement" -}}
+{{- if eq .Kind "assign" -}}
+{{ .Target }} = {{ .Value }}
+{{- else if eq .Kind "trim" -}}
+{{ .Target }} = {{ .Target | operand }}[:0]
+{{- else if eq .Kind "clear" -}}
+clear({{ .Target }})
+{{- else if eq .Kind "reset" -}}
+{{ .Target | operand }}.Reset()
+{{- else if eq .Kind "assert" -}}
+if value, ok := {{ .Target | operand }}.(interface{ Reset() }); ok && value != nil {
+	value.Reset()
+}
+{{- else if eq .Kind "guard" -}}
+if {{ .Target }} != nil {
+{{- range .Inner }}
+	{{ template "statement" . }}
+{{- end }}}
+{{- end -}}
+{{- end -}}`
+)
+
+// emitter собирает выходной файл из форм выше; шаблоны статичны, поэтому собираются один раз.
+var emitter = template.Must(template.New("reset").Funcs(template.FuncMap{
+	"operand": derefOperand,
+}).Parse(strings.Join([]string{fileFormat, methodFormat, statementFormat}, "\n")))
+
+// derefOperand оборачивает в скобки разыменованное выражение: срез x[:0], проверка типа x.(T) и
+// вызов x.M() связываются сильнее разыменования, поэтому без скобок они достали бы до указателя,
+// а не до значения по нему. Присваивание и аргумент clear() скобок не требуют.
+func derefOperand(expr string) string {
+	if strings.HasPrefix(expr, "*") {
+		return "(" + expr + ")"
+	}
+	return expr
+}
+
+// fileData — данные шаблона file: содержимое одного выходного файла.
+type fileData struct {
+	Package string
+	Imports []string
+	Methods []method
+}
+
+// method — данные шаблона method: метод Reset одного помеченного типа.
+type method struct {
+	Receiver   string
+	Type       string
+	Statements []statement
+}
+
+// statement — данные шаблона statement: один оператор сброса. Kind выбирает ветку шаблона, Target
+// — сбрасываемое выражение, Value — нулевое значение, Inner — операторы внутри nil-проверки.
+type statement struct {
+	Kind   string
+	Target string
+	Value  string
+	Inner  []statement
+}
+
+// Вид оператора — имя ветки шаблона statement.
+const (
+	kindAssign = "assign"
+	kindTrim   = "trim"
+	kindClear  = "clear"
+	kindReset  = "reset"
+	kindAssert = "assert"
+	kindGuard  = "guard"
+)
+
+// guard оборачивает операторы в проверку указателя на nil: адрес поля сохраняется, сбрасывается
+// значение по указателю.
+func guard(target string, inner ...statement) statement {
+	return statement{Kind: kindGuard, Target: target, Inner: inner}
+}
 
 // render собирает содержимое файла с методами Reset всех типов одного исходника. resettable —
 // имена всех типов, чей Reset появится по итогам прогона: они делегируют сброс друг другу.
@@ -24,118 +134,44 @@ func render(
 	resettable map[string]bool,
 	warnings *[]Warning,
 ) ([]byte, error) {
-	b := &builder{pkg: pkg, src: src, warnings: warnings, resettable: resettable}
+	b := newBuilder(pkg, src, warnings, resettable)
 
-	declarations := make([]*ast.FuncDecl, 0, len(targets))
+	methods := make([]method, 0, len(targets))
 	for _, item := range targets {
-		declarations = append(declarations, b.methodDecl(item))
+		methods = append(methods, b.methodDecl(item))
 	}
 
-	imports := b.collectImports(declarations)
+	data := fileData{Package: pkg.Name, Imports: b.importPaths(), Methods: methods}
 
 	var source bytes.Buffer
-	source.WriteString(GeneratedHeader + "\n\npackage " + pkg.Name + "\n")
-	if len(imports) > 0 {
-		source.WriteString("\nimport (\n")
-		for _, importPath := range imports {
-			source.WriteString("\t" + strconv.Quote(importPath) + "\n")
-		}
-		source.WriteString(")\n")
+	if err := emitter.ExecuteTemplate(&source, "file", data); err != nil {
+		return nil, fmt.Errorf("рендер %s: %w", sourcePath(pkg, src), err)
 	}
 
-	for _, decl := range declarations {
-		var code bytes.Buffer
-		// Печать через FileSet пакета: go/printer обращается к нему даже для узлов без позиций,
-		// а отступы и переносы строки в итоге выравнивает format.Source.
-		if err := format.Node(&code, pkg.Fset, decl); err != nil {
-			return nil, fmt.Errorf("печать метода %s для %s: %w", decl.Name.Name, sourcePath(pkg, src), err)
-		}
-		source.WriteString("\n\n")
-		source.Write(code.Bytes())
-	}
-
-	content, err := format.Source(assertionPattern.ReplaceAll(source.Bytes(), []byte(assertionInline)))
+	content, err := format.Source(source.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("форматирование %s: %w", sourcePath(pkg, src), err)
 	}
 	return content, nil
 }
 
-// assertionPattern — проверка типа, которую go/printer разворачивает на три строки: у
-// синтетических узлов нет позиций, и единственный метод интерфейса печатается с новой строки.
-// В исходном коде такую запись пишут в одну строку, поэтому она собирается обратно до
-// форматирования.
-var assertionPattern = regexp.MustCompile(`\.\(interface \{\s+` + resetMethod + `\(\)\s+\}\)`)
+// methodDecl описывает метод Reset типа: имя получателя и операторы сброса всех его полей.
+func (b *builder) methodDecl(item target) method {
+	receiver := receiverName(item.name, b.reserved)
 
-const assertionInline = `.(interface{ ` + resetMethod + `() })`
-
-// methodDecl строит func (получатель *Тип) Reset() с проверкой nil-получателя первым оператором.
-func (b *builder) methodDecl(item target) *ast.FuncDecl {
-	receiver := ast.NewIdent(receiverName(item.name, b.importNames()))
-
-	nilGuard := &ast.IfStmt{
-		Cond: &ast.BinaryExpr{X: receiver, Op: token.EQL, Y: ast.NewIdent("nil")},
-		Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{}}},
-	}
-
-	statements := []ast.Stmt{nilGuard}
+	statements := make([]statement, 0, len(item.strct.Fields.List))
 	for _, field := range item.strct.Fields.List {
 		statements = append(statements, b.fieldStatements(receiver, item.named, field)...)
 	}
 
-	return &ast.FuncDecl{
-		Recv: &ast.FieldList{List: []*ast.Field{{
-			Names: []*ast.Ident{ast.NewIdent(receiver.Name)},
-			Type:  &ast.StarExpr{X: ast.NewIdent(item.name)},
-		}}},
-		Name: ast.NewIdent(resetMethod),
-		Type: &ast.FuncType{Params: &ast.FieldList{}},
-		Body: &ast.BlockStmt{List: statements},
-	}
+	return method{Receiver: receiver, Type: item.name, Statements: statements}
 }
 
-// importNames возвращает имена импортированных пакетов исходника — они заняты в выходном файле.
-func (b *builder) importNames() map[string]bool {
-	names := make(map[string]bool, len(b.src.Imports))
-	for _, spec := range b.src.Imports {
-		if name := importName(spec); name != "" {
-			names[name] = true
-		}
-	}
-	return names
-}
-
-// collectImports возвращает отсортированные пути пакетов, которые понадобились сгенерированному
+// importPaths возвращает отсортированные пути пакетов, которые понадобились сгенерированному
 // коду. Появиться они могут только в записи типа массива, например `[3]time.Month{}`.
-func (b *builder) collectImports(declarations []*ast.FuncDecl) []string {
-	available := make(map[string]string, len(b.src.Imports))
-	for _, spec := range b.src.Imports {
-		if name := importName(spec); name != "" {
-			available[name] = strings.Trim(spec.Path.Value, `"`)
-		}
-	}
-	if len(available) == 0 {
-		return nil
-	}
-
-	used := make(map[string]bool)
-	for _, decl := range declarations {
-		ast.Inspect(decl, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if qualifier, ok := selector.X.(*ast.Ident); ok {
-				if importPath, found := available[qualifier.Name]; found {
-					used[importPath] = true
-				}
-			}
-			return true
-		})
-	}
-
-	paths := make([]string, 0, len(used))
-	for importPath := range used {
+func (b *builder) importPaths() []string {
+	paths := make([]string, 0, len(b.used))
+	for importPath := range b.used {
 		paths = append(paths, importPath)
 	}
 	sort.Strings(paths)
@@ -152,56 +188,4 @@ func importName(spec *ast.ImportSpec) string {
 		return ""
 	}
 	return path.Base(unquoted)
-}
-
-func assignStatement(selector ast.Expr, value ast.Expr) ast.Stmt {
-	return &ast.AssignStmt{Lhs: []ast.Expr{selector}, Tok: token.ASSIGN, Rhs: []ast.Expr{value}}
-}
-
-// trimToZero строит выражение selector[:0]: длина обнуляется, ёмкость и массив остаются.
-func trimToZero(selector ast.Expr) ast.Expr {
-	return &ast.SliceExpr{X: selector, High: &ast.BasicLit{Kind: token.INT, Value: "0"}}
-}
-
-func methodCallStatement(selector ast.Expr) ast.Stmt {
-	return &ast.ExprStmt{X: &ast.CallExpr{
-		Fun: &ast.SelectorExpr{X: selector, Sel: ast.NewIdent(resetMethod)},
-	}}
-}
-
-func clearStatement(selector ast.Expr) ast.Stmt {
-	return &ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("clear"), Args: []ast.Expr{selector}}}
-}
-
-func nilGuard(selector ast.Expr, inner ast.Stmt) ast.Stmt {
-	return &ast.IfStmt{
-		Cond: &ast.BinaryExpr{X: selector, Op: token.NEQ, Y: ast.NewIdent("nil")},
-		Body: &ast.BlockStmt{List: []ast.Stmt{inner}},
-	}
-}
-
-// assertResetStatement строит проверку интерфейсного поля на наличие Reset():
-// if value, ok := pole.(interface{ Reset() }); ok && value != nil { value.Reset() }.
-func assertResetStatement(selector ast.Expr) ast.Stmt {
-	return &ast.IfStmt{
-		Init: &ast.AssignStmt{
-			Tok: token.DEFINE,
-			Lhs: []ast.Expr{ast.NewIdent("value"), ast.NewIdent("ok")},
-			Rhs: []ast.Expr{&ast.TypeAssertExpr{X: selector, Type: resetInterface()}},
-		},
-		Cond: &ast.BinaryExpr{
-			X:  ast.NewIdent("ok"),
-			Op: token.LAND,
-			Y:  &ast.BinaryExpr{X: ast.NewIdent("value"), Op: token.NEQ, Y: ast.NewIdent("nil")},
-		},
-		Body: &ast.BlockStmt{List: []ast.Stmt{methodCallStatement(ast.NewIdent("value"))}},
-	}
-}
-
-// resetInterface — запись интерфейсного типа interface{ Reset() } для проверки значения поля.
-func resetInterface() ast.Expr {
-	return &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
-		Names: []*ast.Ident{ast.NewIdent(resetMethod)},
-		Type:  &ast.FuncType{Params: &ast.FieldList{}},
-	}}}}
 }

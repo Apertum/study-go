@@ -21,6 +21,12 @@ type Plain struct {
 	Values []int
 }
 
+// Resetter — интерфейс с тем же методом: поле-указатель на него проверяется типом уже после
+// разыменования.
+type Resetter interface {
+	Reset()
+}
+
 //generate:reset
 type Outer struct {
 	Base
@@ -30,4 +36,6 @@ type Outer struct {
 	mutex sync.Mutex
 	watch *ext.Watcher
 	next  *Outer
+	once  *Resetter
+	deep  **ext.Watcher
 }
