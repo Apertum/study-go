@@ -342,11 +342,12 @@ func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) er
 		usrID,
 		fmt.Sprintf("(%s)$", suffix), // Формируем регулярное выражение на стороне Go
 	)
-	defer rows.Close()
 	if err != nil {
 		logrus.WithError(err).Errorf("Failed to DELETE user URLs: %s", suffix)
-	} else {
-		logrus.Infof("Удалили: %s", suffix)
+		return err
 	}
-	return err
+	defer rows.Close()
+
+	logrus.Infof("Удалили: %s", suffix)
+	return nil
 }

@@ -84,7 +84,7 @@ func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 			var req struct {
 				URL string `json:"url"`
 			}
-			if err := json.Unmarshal(body, &req); err == nil {
+			if err = json.Unmarshal(body, &req); err == nil {
 				longURL = req.URL
 			}
 		}
@@ -386,7 +386,7 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 			payload, signature := parts[0], parts[1]
 
 			// верифицируем HMAC
-			if _, err := verifyCookie(config.CookieKey, payload, signature); err != nil {
+			if _, err = verifyCookie(config.CookieKey, payload, signature); err != nil {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -447,7 +447,7 @@ func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
 		var req struct {
 			UsrName string `json:"usr_name"`
 		}
-		if err := json.Unmarshal(body, &req); err != nil || req.UsrName == "" {
+		if err = json.Unmarshal(body, &req); err != nil || req.UsrName == "" {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}

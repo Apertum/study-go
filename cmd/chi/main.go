@@ -92,11 +92,13 @@ func deleteCar(rw http.ResponseWriter, r *http.Request) {
 func main() {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RealIP)
+	// middleware.RealIP не подключаем: он подменяет r.RemoteAddr значением из
+	// X-Forwarded-For / X-Real-IP независимо от того, проставляет ли их наша
+	// инфраструктура, поэтому адрес клиента можно подделать (в chi помечен deprecated).
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	// или
-	// r.Use(middleware.RealIP, middleware.Logger, middleware.Recoverer)
+	// r.Use(middleware.Logger, middleware.Recoverer)
 
 	r.Post("/car", newCar)           // POST /car
 	r.Get("/car/{id}", getCar)       // GET /car/1234

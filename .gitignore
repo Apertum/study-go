@@ -41,3 +41,14 @@ go.work.sum
 /USvideos.csv
 *.patch
 /.tmp
+
+# Бинарники, которые `go build ./cmd/<имя>` без -o кладёт в корень репозитория
+/alisa
+/chi
+/db
+/hw
+/resty
+/shortener
+/staticlint
+/zip
+*.zip
