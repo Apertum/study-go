@@ -3,21 +3,27 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"time"
 
 	"study-go.ru/cho/eto/internal/audit"
 	config "study-go.ru/cho/eto/internal/config"
 	"study-go.ru/cho/eto/internal/handler"
 	internalMiddleware "study-go.ru/cho/eto/internal/middleware"
+	"study-go.ru/cho/eto/internal/secure"
 	"study-go.ru/cho/eto/internal/storage"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/sirupsen/logrus"
 )
+
+// listenTimeout ограничивает ожидание заголовков запроса на обоих слушателях.
+const listenTimeout = 5 * time.Second
 
 func init() {
 	config.LogsInit()
@@ -87,7 +93,90 @@ func main() {
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)
-	logrus.Fatal(http.ListenAndServe(config.Addr, r))
+
+	if err := serve(r); err != nil {
+		logrus.Fatal(err)
+	}
+}
+
+// serve слушает настроенный адрес: по HTTPS с редиректом с HTTP либо по обычному HTTP.
+//
+// Режимов запуска два.
+//
+//	HTTPS выключен (нет -s и переменная ENABLE_HTTPS пуста) — один слушатель на
+//	config.Addr (по умолчанию :8080), открытым текстом, сертификаты не создаются.
+//
+//	HTTPS включён (-s либо ENABLE_HTTPS) — два слушателя сразу: TLS-сервер на
+//	config.Addr (:8080) и редиректор на config.HTTPRedirectAddr (:8081), который
+//	отвечает 301 на https:// с тем же путём и query.
+//
+// Ошибки конфигурации и выпуска материалов возвращаются до прослушивания портов,
+// чтобы неверная конфигурация не выглядела как рабочий сервер.
+func serve(handler http.Handler) error {
+	// Проверяем включение HTTPS первыми: значение ENABLE_HTTPS важнее флага -s, а
+	// неразбираемое значение должно завершить процесс до того, как занят хоть один порт.
+	enableHTTPS, err := config.ParseEnabled(config.EnableHTTPS, os.Getenv(config.EnvEnableHTTPS))
+	if err != nil {
+		return err
+	}
+
+	// Основной сервер занимает -a / SERVER_ADDRESS. TLSConfig пока пустая — при
+	// включённом HTTPS сертификат подставится ниже.
+	server := &http.Server{
+		Addr:              config.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: listenTimeout,
+	}
+
+	// Ветвь «как раньше»: единственный порт и обычный HTTP.
+	if !enableHTTPS {
+		logrus.Info("Запуск HTTP-сервера на ", config.Addr)
+
+		return server.ListenAndServe()
+	}
+
+	// Дальше только HTTPS. Адреса сверяются до bind: иначе второй слушатель падал бы с
+	// невнятным «bind: address already in use» уже внутри горутины.
+	err = secure.AddrConflict(config.Addr, config.HTTPRedirectAddr)
+	if err != nil {
+		return err
+	}
+
+	// Материал TLS берётся из -cert-file/-key-file (cert.pem/key.pem): готовая пара
+	// переиспользуется байт в байт, битая или истёкшая перевыпускается на месте.
+	material, err := secure.LoadOrGenerate(config.CertFile, config.KeyFile)
+	if err != nil {
+		return fmt.Errorf("материалы TLS не готовы: %w", err)
+	}
+
+	// Сертификат кладём прямо в конфигурацию сервера: пути файлов в ListenAndServeTLS
+	// ниже не передаются.
+	server.TLSConfig = material.ServerTLS()
+
+	// Второй слушатель ничего не обслуживает сам — только редирект на основной адрес.
+	redirect := &http.Server{
+		Addr:              config.HTTPRedirectAddr,
+		Handler:           secure.RedirectHandler(config.Addr),
+		ReadHeaderTimeout: listenTimeout,
+	}
+
+	// Редиректор поднимается в горутине: за ней ListenAndServeTLS уже не возвращает
+	// управление, а отвечать на обоих портах нужно одновременно.
+	go func() {
+		logrus.Info("Запуск HTTP-редиректора на ", config.HTTPRedirectAddr)
+
+		if err := redirect.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logrus.WithError(err).Error("HTTP-редиректор завершился ошибкой")
+		}
+	}()
+
+	// Освобождаем порт редиректа, когда основной сервер всё же завершился.
+	defer func() { _ = redirect.Close() }()
+
+	logrus.Info("Запуск HTTPS-сервера на ", config.Addr)
+
+	// Эта строка блокирует до остановки процесса; ошибку печатает main одним logrus.Fatal.
+	return server.ListenAndServeTLS("", "")
 }
 
 func initDB(dsn string) (*sql.DB, error) {

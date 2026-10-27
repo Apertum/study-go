@@ -13,6 +13,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	config "study-go.ru/cho/eto/internal/config"
+	"study-go.ru/cho/eto/internal/secure"
 )
 
 // Информация о сборке, подставляется при линковке через -ldflags "-X main.buildVersion=... -X main.buildDate=... -X main.buildCommit=...":
@@ -29,12 +30,25 @@ type NetAddress struct {
 	Port int
 }
 
-func init() {
-	config.LogsInit()
+// Настройки доверия клиента: сертификат сервера берётся из файла, переменная переопределяет флаг.
+const (
+	defaultCertFile = "cert.pem"
+	envCertFile     = "CERT_FILE"
+)
+
+// String возвращает значение флага -addr для показа в справке: схема адреса там не участвует.
+func (a NetAddress) String() string {
+	return a.Host + ":" + strconv.Itoa(a.Port)
 }
 
-func (a NetAddress) String() string {
-	return "http://" + a.Host + ":" + strconv.Itoa(a.Port)
+// URL возвращает адрес службы со схемой https при включённом HTTPS.
+func (a NetAddress) URL(useHTTPS bool) string {
+	scheme := "http"
+	if useHTTPS {
+		scheme = "https"
+	}
+
+	return scheme + "://" + a.Host + ":" + strconv.Itoa(a.Port)
 }
 
 func (a *NetAddress) Set(s string) error {
@@ -52,6 +66,7 @@ func (a *NetAddress) Set(s string) error {
 }
 
 func main() {
+	config.LogsInit()
 	fmt.Printf("Build version: %s\n", buildVersion)
 	fmt.Printf("Build date: %s\n", buildDate)
 	fmt.Printf("Build commit: %s\n", buildCommit)
@@ -61,9 +76,28 @@ func main() {
 	_ = flag.Value(addr)
 	// проверка реализации
 	flag.Var(addr, "addr", "Net address host:port")
+	useHTTPSFlag := flag.Bool("s", false, "запрос по HTTPS с проверкой сертификата из -cert-file")
+	certFileFlag := flag.String("cert-file", defaultCertFile, "путь к PEM-сертификату сервера, которому доверяем")
 	flag.Parse()
 	logrus.Debug(addr.Host)
 	logrus.Debug(addr.Port)
+
+	useHTTPS, err := config.ParseEnabled(*useHTTPSFlag, os.Getenv(config.EnvEnableHTTPS))
+	if err != nil {
+		logrus.WithError(err).Fatalf("Не разобрано значение %s", config.EnvEnableHTTPS)
+		os.Exit(1)
+	}
+
+	certFile := *certFileFlag
+	if env := os.Getenv(envCertFile); env != "" {
+		certFile = env
+	}
+
+	client, err := newClient(useHTTPS, certFile)
+	if err != nil {
+		logrus.WithError(err).Fatalf("HTTP-клиент не настроен: не прочитан сертификат -cert-file либо %s", envCertFile)
+		os.Exit(1)
+	}
 
 	// приглашение в консоли
 	fmt.Print("Введите длинный URL: ")
@@ -90,11 +124,10 @@ func main() {
 	}
 
 	// добавляем HTTP-клиент
-	client := &http.Client{}
 	// пишем запрос
 	// запрос методом POST должен, помимо заголовков, содержать тело
 	// тело должно быть источником потокового чтения io.Reader
-	request, err := http.NewRequest(http.MethodPost, addr.String(), strings.NewReader(string(data)))
+	request, err := http.NewRequest(http.MethodPost, addr.URL(useHTTPS), strings.NewReader(string(data)))
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка создания HTTP-запроса")
 		os.Exit(1)
@@ -118,4 +151,19 @@ func main() {
 	}
 	// и печатаем его
 	logrus.Info(string(body))
+}
+
+// newClient собирает HTTP-клиент: по HTTPS он доверяет только сертификату из certFile,
+// по обычному HTTP клиент остаётся прежним и файлы не читает.
+func newClient(useHTTPS bool, certFile string) (*http.Client, error) {
+	if !useHTTPS {
+		return &http.Client{}, nil
+	}
+
+	tlsConfig, err := secure.ClientTLS(certFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}, nil
 }

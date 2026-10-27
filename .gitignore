@@ -52,3 +52,7 @@ go.work.sum
 /staticlint
 /zip
 *.zip
+
+# Самоподписанные материалы TLS, которые сервис выпускает рядом с процессом
+/cert.pem
+/key.pem
