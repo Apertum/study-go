@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -169,20 +170,31 @@ func TestLoadOrGenerateIssuesUsableSelfSignedPair(t *testing.T) {
 		t.Fatalf("сертификат не записан: %v", err)
 	}
 
-	if certInfo.Mode().Perm() != certPerm {
-		t.Errorf("права сертификата %v, ожидали %v", certInfo.Mode().Perm(), certPerm)
-	}
-
 	keyInfo, err := os.Stat(keyPath)
 	if err != nil {
 		t.Fatalf("ключ не записан: %v", err)
 	}
 
-	if keyInfo.Mode().Perm() != keyPerm {
-		t.Errorf("права ключа %v, ожидали %v", keyInfo.Mode().Perm(), keyPerm)
-	}
+	assertPerm(t, certPath, certPerm, certInfo)
+	assertPerm(t, keyPath, keyPerm, keyInfo)
 
 	assertNoKeyMaterial(t, logs.String(), keyPath)
+}
+
+// assertPerm проверяет права файла там, где файловая система их различает: Windows отдаёт
+// 0666 для любого файла, а доступ там определяют ACL, которых в os.FileMode нет.
+func assertPerm(t *testing.T, path string, want os.FileMode, info os.FileInfo) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Logf("%s: права файла в Windows неотличимы (%v), проверка пропущена", filepath.Base(path), info.Mode().Perm())
+
+		return
+	}
+
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("права %s %v, ожидали %v", filepath.Base(path), got, want)
+	}
 }
 
 func TestLoadOrGenerateReusesExistingPair(t *testing.T) {

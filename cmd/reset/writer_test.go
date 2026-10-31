@@ -144,7 +144,7 @@ func TestFindGenerated(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if got := findGenerated([]*packages.Package{test.pkg}); !reflect.DeepEqual(got, test.want) {
-				t.Errorf("найдено %v, хотим %v", got, test.want)
+				t.Errorf("найдено %v, хотим %v", got, test.want) // todo check test in Windows
 			}
 		})
 	}

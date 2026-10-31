@@ -9,11 +9,35 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// envNames — переменные окружения, которые читает ParseFlags. Тесты обязаны задавать их явно:
+// унаследованное окружение процесса (в первую очередь CONFIG) не должно решать исход теста.
+var envNames = []string{
+	"SERVER_ADDRESS", "BASE_URL", "FILE_STORAGE_PATH", "DATABASE_DSN", "COOKIE_KEY",
+	"AUDIT_FILE", "AUDIT_URL", EnvEnableHTTPS, "CERT_FILE", "KEY_FILE", "HTTP_SERVER_ADDRESS", EnvConfig,
+}
+
 // parseWith изображает запуск процесса: заново создаёт набор флагов и применяет аргументы с переменными.
+// Переменные, которых нет в env, очищаются. Ошибка разбора считается падением теста.
 //
 // Вызывать только из последовательных тестов: ParseFlags заполняет переменные пакета.
 func parseWith(t *testing.T, args []string, env map[string]string) {
 	t.Helper()
+
+	if err := runParse(t, args, env, io.Discard); err != nil {
+		t.Fatalf("конфигурация не разобрана: %v", err)
+	}
+}
+
+// runParse — тот же запуск с приёмником журнала и без реакции на ошибку: им проверяют
+// предупреждения разбора файла и случай неразбираемого ENABLE_HTTPS.
+func runParse(t *testing.T, args []string, env map[string]string, logOut io.Writer) error {
+	t.Helper()
+
+	for _, name := range envNames {
+		if _, ok := env[name]; !ok {
+			t.Setenv(name, "")
+		}
+	}
 
 	for name, value := range env {
 		t.Setenv(name, value)
@@ -31,21 +55,9 @@ func parseWith(t *testing.T, args []string, env map[string]string) {
 
 	os.Args = append([]string{"shorter"}, args...)
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	logrus.SetOutput(io.Discard)
+	logrus.SetOutput(logOut)
 
-	ParseFlags()
-}
-
-// httpsEnabled возвращает итоговый признак HTTPS так же, как это делает вызывающий код сервера.
-func httpsEnabled(t *testing.T) bool {
-	t.Helper()
-
-	enabled, err := ParseEnabled(EnableHTTPS, os.Getenv(EnvEnableHTTPS))
-	if err != nil {
-		t.Fatalf("значение переменной не разобрано: %v", err)
-	}
-
-	return enabled
+	return ParseFlags()
 }
 
 func TestParseFlagsHTTPSSettings(t *testing.T) {
@@ -119,8 +131,8 @@ func TestParseFlagsHTTPSSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			parseWith(t, tt.args, tt.env)
 
-			if got := httpsEnabled(t); got != tt.wantEnable {
-				t.Errorf("HTTPS включён=%v, ожидали %v", got, tt.wantEnable)
+			if EnableHTTPS != tt.wantEnable {
+				t.Errorf("HTTPS включён=%v, ожидали %v", EnableHTTPS, tt.wantEnable)
 			}
 
 			if CertFile != tt.wantCertFile {

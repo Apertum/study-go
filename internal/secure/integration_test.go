@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,14 +47,36 @@ func (b *lockedBuffer) String() string {
 
 // serverProcess — запущенный для проверки процесс сервера с перехватом стандартных потоков.
 type serverProcess struct {
-	cmd    *exec.Cmd
-	stderr *lockedBuffer
-	stop   func()
+	stderr  *lockedBuffer
+	done    chan error
+	stopped chan struct{}
+	stop    func()
 }
 
-// alive проверяет, что процесс сервера ещё работает.
+// alive проверяет, что процесс сервера ещё работает. сигналом 0 это не проверяется:
+// на Windows os.Process.Signal умеет только убивать процесс.
 func (p *serverProcess) alive() bool {
-	return p.cmd.Process.Signal(syscall.Signal(0)) == nil
+	select {
+	case <-p.stopped:
+		return false
+	default:
+		return true
+	}
+}
+
+// wait дожидается завершения процесса и возвращает результат его запуска.
+func (p *serverProcess) wait() error {
+	return <-p.done
+}
+
+// buildTarget возвращает путь, куда `go build -o` положит бинарник: на Windows это всегда
+// имя с .exe, а запуск пути без расширения не работает — os/exec не дописывает его сам.
+func buildTarget(dir, name string) string {
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+
+	return filepath.Join(dir, name)
 }
 
 // buildServer собирает бинарник сервера во временный каталог теста.
@@ -65,7 +88,7 @@ func buildServer(t *testing.T) string {
 		t.Skip("нужен инструмент go для сборки сервера")
 	}
 
-	bin := filepath.Join(t.TempDir(), "shorter")
+	bin := buildTarget(t.TempDir(), "shorter")
 
 	build := exec.Command(goTool, "build", "-o", bin, "../../cmd/shorter")
 
@@ -122,17 +145,29 @@ func startServer(t *testing.T, bin, dir string, env map[string]string) *serverPr
 		t.Fatalf("сервер не запущен: %v", err)
 	}
 
-	var once sync.Once
+	// Один Wait на процесс: ошибку получает дождавшийся, а закрытие stopped видно всем.
+	done := make(chan error, 1)
+	stopped := make(chan struct{})
+
+	go func() {
+		err := cmd.Wait()
+		done <- err
+		close(stopped)
+	}()
+
 	stop := func() {
-		once.Do(func() {
-			cancel()
-			_ = cmd.Wait()
-		})
+		cancel()
+
+		select {
+		case <-stopped:
+		case <-time.After(20 * time.Second):
+			t.Error("процесс сервера не завершился после отмены контекста")
+		}
 	}
 
 	t.Cleanup(stop)
 
-	return &serverProcess{cmd: cmd, stderr: stderr, stop: stop}
+	return &serverProcess{stderr: stderr, done: done, stopped: stopped, stop: stop}
 }
 
 // waitResponse допрашивается до первого HTTP-ответа любого кода.
@@ -184,6 +219,7 @@ func waitMaterial(t *testing.T, path string, proc *serverProcess) {
 	t.Fatalf("материал %s не появился: %v\nвывод процесса:\n%s", path, lastErr, proc.stderr.String())
 }
 
+// todo check test in Windows
 func TestShorterServerServesHTTPSAndRedirect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")
@@ -276,6 +312,7 @@ func TestShorterServerServesHTTPSAndRedirect(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShorterServerWithoutHTTPS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")
@@ -314,6 +351,7 @@ func TestShorterServerWithoutHTTPS(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShorterServerRejectsSameAddresses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")
@@ -332,7 +370,7 @@ func TestShorterServerRejectsSameAddresses(t *testing.T) {
 		"KEY_FILE":            filepath.Join(dir, "key.pem"),
 	})
 
-	if err := proc.cmd.Wait(); err == nil {
+	if err := proc.wait(); err == nil {
 		t.Fatalf("сервер завершился успешно с совпадающими адресами %s\n%s", addr, proc.stderr.String())
 	}
 

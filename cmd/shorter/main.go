@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
-	"os"
 	"time"
 
 	"study-go.ru/cho/eto/internal/audit"
@@ -27,10 +26,14 @@ const listenTimeout = 5 * time.Second
 
 func init() {
 	config.LogsInit()
-	config.ParseFlags()
 }
 
 func main() {
+	// Конфигурация обязана быть итоговой до первой строки, которая читает настройки.
+	// Неразбираемое ENABLE_HTTPS завершает процесс здесь — до хранилища, файла аудита и базы.
+	if err := config.ParseFlags(); err != nil {
+		logrus.Fatal(err)
+	}
 
 	logrus.Info(`
 ╔═══════════════════════════════╗
@@ -103,23 +106,16 @@ func main() {
 //
 // Режимов запуска два.
 //
-//	HTTPS выключен (нет -s и переменная ENABLE_HTTPS пуста) — один слушатель на
-//	config.Addr (по умолчанию :8080), открытым текстом, сертификаты не создаются.
+//	HTTPS выключен (нет -s, переменная ENABLE_HTTPS пуста и в файле нет enable_https) —
+//	один слушатель на config.Addr (по умолчанию :8080), открытым текстом, сертификаты не создаются.
 //
-//	HTTPS включён (-s либо ENABLE_HTTPS) — два слушателя сразу: TLS-сервер на
+//	HTTPS включён (-s, ENABLE_HTTPS либо enable_https из файла) — два слушателя сразу: TLS-сервер на
 //	config.Addr (:8080) и редиректор на config.HTTPRedirectAddr (:8081), который
 //	отвечает 301 на https:// с тем же путём и query.
 //
-// Ошибки конфигурации и выпуска материалов возвращаются до прослушивания портов,
-// чтобы неверная конфигурация не выглядела как рабочий сервер.
+// Ошибки выпуска материалов возвращаются до прослушивания портов, чтобы неверная
+// конфигурация не выглядела как рабочий сервер.
 func serve(handler http.Handler) error {
-	// Проверяем включение HTTPS первыми: значение ENABLE_HTTPS важнее флага -s, а
-	// неразбираемое значение должно завершить процесс до того, как занят хоть один порт.
-	enableHTTPS, err := config.ParseEnabled(config.EnableHTTPS, os.Getenv(config.EnvEnableHTTPS))
-	if err != nil {
-		return err
-	}
-
 	// Основной сервер занимает -a / SERVER_ADDRESS. TLSConfig пока пустая — при
 	// включённом HTTPS сертификат подставится ниже.
 	server := &http.Server{
@@ -129,7 +125,7 @@ func serve(handler http.Handler) error {
 	}
 
 	// Ветвь «как раньше»: единственный порт и обычный HTTP.
-	if !enableHTTPS {
+	if !config.EnableHTTPS {
 		logrus.Info("Запуск HTTP-сервера на ", config.Addr)
 
 		return server.ListenAndServe()
@@ -137,7 +133,7 @@ func serve(handler http.Handler) error {
 
 	// Дальше только HTTPS. Адреса сверяются до bind: иначе второй слушатель падал бы с
 	// невнятным «bind: address already in use» уже внутри горутины.
-	err = secure.AddrConflict(config.Addr, config.HTTPRedirectAddr)
+	err := secure.AddrConflict(config.Addr, config.HTTPRedirectAddr)
 	if err != nil {
 		return err
 	}

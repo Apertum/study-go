@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -116,6 +117,7 @@ func TestNewClient(t *testing.T) {
 	})
 }
 
+// todo check test in Windows
 func TestShortenerClientTrustsIssuedCertificate(t *testing.T) {
 	material, certPath := issueMaterial(t)
 
@@ -144,6 +146,7 @@ func TestShortenerClientTrustsIssuedCertificate(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShortenerClientRejectsUntrustedServer(t *testing.T) {
 	_, certPath := issueMaterial(t)
 	foreignMaterial, _ := issueMaterial(t)
@@ -183,6 +186,7 @@ func TestShortenerClientRejectsUntrustedServer(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShortenerClientReportsBadEnableValue(t *testing.T) {
 	certPath := filepath.Join(t.TempDir(), "cert.pem")
 
@@ -204,6 +208,7 @@ func TestShortenerClientReportsBadEnableValue(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShortenerClientPrefersEnvironmentOverFlags(t *testing.T) {
 	material, certPath := issueMaterial(t)
 	_, otherCert := issueMaterial(t)
@@ -222,6 +227,7 @@ func TestShortenerClientPrefersEnvironmentOverFlags(t *testing.T) {
 	}
 }
 
+// todo check test in Windows
 func TestShortenerClientHelpMentionsHTTPSSettings(t *testing.T) {
 	stdout, code := runClient(t, buildClient(t), t.TempDir(), clientRun{args: []string{"-h"}})
 
@@ -243,6 +249,16 @@ type clientRun struct {
 	args  []string
 }
 
+// buildTarget возвращает путь, куда `go build -o` положит бинарник: на Windows это всегда
+// имя с .exe, а запуск пути без расширения не работает — os/exec не дописывает его сам.
+func buildTarget(dir, name string) string {
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+
+	return filepath.Join(dir, name)
+}
+
 // buildClient собирает бинарник клиента в отдельный временный каталог.
 func buildClient(t *testing.T) string {
 	t.Helper()
@@ -253,7 +269,7 @@ func buildClient(t *testing.T) string {
 	}
 
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "shortener")
+	bin := buildTarget(dir, "shortener")
 
 	build := exec.Command(goTool, "build", "-o", bin, ".")
 

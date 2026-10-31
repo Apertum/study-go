@@ -56,7 +56,7 @@ func TestGenerateGolden(t *testing.T) {
 			if _, err := parser.ParseFile(token.NewFileSet(), filepath.Base(file.Path), file.Content, parser.AllErrors); err != nil {
 				t.Fatalf("сгенерированный код не разбирается: %v\n%s", err, file.Content)
 			}
-			assertGolden(t, fixture, file.Content)
+			assertGolden(t, fixture, file.Content) // todo check test in Windows
 		})
 	}
 }
