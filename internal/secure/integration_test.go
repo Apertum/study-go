@@ -219,7 +219,6 @@ func waitMaterial(t *testing.T, path string, proc *serverProcess) {
 	t.Fatalf("материал %s не появился: %v\nвывод процесса:\n%s", path, lastErr, proc.stderr.String())
 }
 
-// todo check test in Windows
 func TestShorterServerServesHTTPSAndRedirect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")
@@ -312,7 +311,6 @@ func TestShorterServerServesHTTPSAndRedirect(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShorterServerWithoutHTTPS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")
@@ -351,7 +349,6 @@ func TestShorterServerWithoutHTTPS(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShorterServerRejectsSameAddresses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("сквозная проверка сервера не запускается с -short")

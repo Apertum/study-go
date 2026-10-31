@@ -209,8 +209,11 @@ func TestParseFlagsBrokenFileWarnsAndKeepsSettings(t *testing.T) {
 		t.Fatalf("битый файл не должен прерывать запуск: %v", err)
 	}
 
-	if out := log.String(); !strings.Contains(out, "конфигурация из файла не применена") || !strings.Contains(out, path) {
-		t.Errorf("в журнале %q нет предупреждения с путём %q", out, path) // todo check test in Windows
+	out := log.String()
+	// Журнал экранирует обратные слэши (Windows: \ → \\), поэтому перед сравнением
+	// унифицируем экранирование: ищем путь с одинарными слэшами в логе с двойными.
+	if !strings.Contains(out, "конфигурация из файла не применена") || !strings.Contains(out, strings.ReplaceAll(path, `\`, `\\`)) {
+		t.Errorf("в журнале %q нет предупреждения с путём %q", out, path)
 	}
 
 	// Ни одна настройка из неразобранного файла не применена.
@@ -238,8 +241,8 @@ func TestParseFlagsMissingFileWarnsAndKeepsSettings(t *testing.T) {
 	}
 
 	out := log.String()
-	if !strings.Contains(out, "конфигурация из файла не применена") || !strings.Contains(out, path) {
-		t.Errorf("в журнале %q нет предупреждения с путём %q", out, path) // todo check test in Windows
+	if !strings.Contains(out, "конфигурация из файла не применена") || !strings.Contains(out, strings.ReplaceAll(path, `\`, `\\`)) {
+		t.Errorf("в журнале %q нет предупреждения с путём %q", out, path)
 	}
 
 	if Addr != ":8080" || BaseURL != "http://short.ru/" {

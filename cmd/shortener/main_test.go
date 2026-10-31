@@ -117,7 +117,6 @@ func TestNewClient(t *testing.T) {
 	})
 }
 
-// todo check test in Windows
 func TestShortenerClientTrustsIssuedCertificate(t *testing.T) {
 	material, certPath := issueMaterial(t)
 
@@ -146,7 +145,6 @@ func TestShortenerClientTrustsIssuedCertificate(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShortenerClientRejectsUntrustedServer(t *testing.T) {
 	_, certPath := issueMaterial(t)
 	foreignMaterial, _ := issueMaterial(t)
@@ -186,7 +184,6 @@ func TestShortenerClientRejectsUntrustedServer(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShortenerClientReportsBadEnableValue(t *testing.T) {
 	certPath := filepath.Join(t.TempDir(), "cert.pem")
 
@@ -208,7 +205,6 @@ func TestShortenerClientReportsBadEnableValue(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShortenerClientPrefersEnvironmentOverFlags(t *testing.T) {
 	material, certPath := issueMaterial(t)
 	_, otherCert := issueMaterial(t)
@@ -227,7 +223,6 @@ func TestShortenerClientPrefersEnvironmentOverFlags(t *testing.T) {
 	}
 }
 
-// todo check test in Windows
 func TestShortenerClientHelpMentionsHTTPSSettings(t *testing.T) {
 	stdout, code := runClient(t, buildClient(t), t.TempDir(), clientRun{args: []string{"-h"}})
 
