@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -561,10 +562,19 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// urlDeleter — мягкое удаление ссылок пользователя. Единственная операция, которую
+// хендлер DeleteURLs выполняет сам; выделена в интерфейс, чтобы фоновую работу можно
+// было проверить без настоящей PostgreSQL (тесты пакета работают в файловом режиме).
+type urlDeleter interface {
+	DeleteUrls(ctx context.Context, usrID int, urls []string) error
+}
+
 // DeleteURLs обрабатывает DELETE-запросы на пути /api/user/urls.
 //
-// Принимает JSON-массив short_url для удаления и помечает их как удалённые
-// в асинхронной горутине. Возвращает 202 Accepted сразу после запуска.
+// Принимает JSON-массив short_url для удаления и запускает его в отдельной горутине,
+// возвращая 202 Accepted сразу. Ответ означает, что удаление будет выполнено: горутина
+// работает с контекстом процесса (lifecycle), а не с контекстом запроса (он отменяется
+// вместе с ответом), и учитывается в wg, поэтому остановка сервиса её дождётся.
 // Требует авторизацию через AuthMiddleware.
 //
 // Пример запроса:
@@ -577,7 +587,7 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 // Ответ 202:
 //
 //	{"done":  "OK"}
-func DeleteURLs(s *storage.Storage) http.HandlerFunc {
+func DeleteURLs(store urlDeleter, lifecycle context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		body, err := io.ReadAll(r.Body)
@@ -606,7 +616,11 @@ func DeleteURLs(s *storage.Storage) http.HandlerFunc {
 			return
 		}
 
-		go s.DeleteUrls(r.Context(), usrID, forDel)
+		wg.Go(func() {
+			if err := store.DeleteUrls(lifecycle, usrID, forDel); err != nil {
+				logrus.WithError(err).Errorf("Не выполнено удаление ссылок пользователя %d", usrID)
+			}
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)

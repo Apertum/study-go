@@ -30,6 +30,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -185,9 +186,13 @@ func (h *URLHandler) Handle(event Event) {
 //
 // Подход «publish-subscribe»: обработчики подписываются через Subscribe(),
 // а хэндлеры вызывают Notify() после успешной обработки запроса.
+//
+// Каждое поставленное событие учитывается в wg, поэтому остановка сервиса может
+// дождаться фактической доставки через Wait() и только потом закрывать приёмники.
 type Central struct {
 	handlers []EventHandler
 	mu       sync.RWMutex
+	wg       sync.WaitGroup
 }
 
 // NewCentral создаёт новый пустой Central для подписки наблюдателей.
@@ -206,7 +211,8 @@ func NewCentral() *Central {
 
 // Subscribe добавляет наблюдателя в список. Вызов небезопасен для одновременного
 // использования с Notify — если нужно добавлять наблюдателей во время работы,
-// вызывайте Subscribe до начала обработки запросов.
+// вызывайте Subscribe до начала обработки запросов. То же ограничение у Wait:
+// он ожидает только подписанных до ожидания наблюдателей.
 func (c *Central) Subscribe(h EventHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -233,10 +239,40 @@ func (c *Central) NotifySynced(event Event) {
 // Notify уведомляет всех подписанных наблюдателей о событии в отдельных горутинах.
 // Метод неблокирующий — возврат происходит до завершения Handle.
 // Для тестов и случаев, где требуется синхронизация, используйте NotifySynced.
+//
+// Поставленное событие засчитывается в счётчик неразобранных, поэтому его доставку
+// можно дождаться через Wait перед закрытием приёмников.
 func (c *Central) Notify(event Event) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
+	c.wg.Add(len(c.handlers))
+
 	for _, h := range c.handlers {
-		go h.Handle(event)
+		go func(h EventHandler) {
+			defer c.wg.Done()
+			h.Handle(event)
+		}(h)
+	}
+}
+
+// Wait ждёт разобранных событий аудита не дольше ctx: nil означает, что все поставленные
+// на этот момент события доставлены всем подписчикам. Ошибка — ctx.Err(): приёмники ещё
+// разбирают события, и закрывать их рано.
+//
+// Список подписчиков должен перестать меняться до ожидания (см. Subscribe).
+func (c *Central) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		c.wg.Wait()
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("audit: подписчики не разобрали события: %w", ctx.Err())
 	}
 }
