@@ -65,6 +65,8 @@ func (a *NetAddress) Set(s string) error {
 	return nil
 }
 
+// main завершает процесс по первому logrus.Fatal: он сам вызывает выход с кодом 1,
+// поэтому следующий за ним шаг недостижим.
 func main() {
 	config.LogsInit()
 	fmt.Printf("Build version: %s\n", buildVersion)
@@ -85,7 +87,6 @@ func main() {
 	useHTTPS, err := config.ParseEnabled(*useHTTPSFlag, os.Getenv(config.EnvEnableHTTPS))
 	if err != nil {
 		logrus.WithError(err).Fatalf("Не разобрано значение %s", config.EnvEnableHTTPS)
-		os.Exit(1)
 	}
 
 	certFile := *certFileFlag
@@ -96,7 +97,6 @@ func main() {
 	client, err := newClient(useHTTPS, certFile)
 	if err != nil {
 		logrus.WithError(err).Fatalf("HTTP-клиент не настроен: не прочитан сертификат -cert-file либо %s", envCertFile)
-		os.Exit(1)
 	}
 
 	// приглашение в консоли
@@ -107,7 +107,6 @@ func main() {
 	long, err := reader.ReadString('\n')
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка чтения из консоли")
-		os.Exit(1)
 	}
 	long = strings.TrimSuffix(long, "\n")
 
@@ -120,7 +119,6 @@ func main() {
 	data, err := json.Marshal(req)
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка сериализации данных запроса")
-		os.Exit(1)
 	}
 
 	// добавляем HTTP-клиент
@@ -130,7 +128,6 @@ func main() {
 	request, err := http.NewRequest(http.MethodPost, addr.URL(useHTTPS), strings.NewReader(string(data)))
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка создания HTTP-запроса")
-		os.Exit(1)
 	}
 	// в заголовках запроса указываем кодировку
 	request.Header.Add("Content-Type", "application/json")
@@ -138,7 +135,6 @@ func main() {
 	response, err := client.Do(request)
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка отправки HTTP-запроса")
-		os.Exit(1)
 	}
 	// выводим код ответа
 	logrus.Info("Статус-код ", response.Status)
@@ -147,7 +143,6 @@ func main() {
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		logrus.WithError(err).Fatal("Ошибка чтения тела ответа")
-		os.Exit(1)
 	}
 	// и печатаем его
 	logrus.Info(string(body))

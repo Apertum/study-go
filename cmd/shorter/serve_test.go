@@ -207,13 +207,6 @@ func (c *spyCloser) Close() error {
 	return c.err
 }
 
-func (c *spyCloser) snapshot() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return append([]string(nil), *c.order...)
-}
-
 // gateSubscriber — подписчик аудита, который не разбирает события до открытия шлюза.
 type gateSubscriber struct {
 	release   chan struct{}
