@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -332,8 +333,14 @@ func (s *Storage) NextID() string {
 //
 // Помечает строки в таблице url_srv, где usr_id совпадает и short_url совпадает
 // с любым из переданных URL (через PostgreSQL regex). Возвращает ошибку выполнения запроса.
-// Используется хэндлером DeleteURLs; вызывается в отдельной горутине.
+// Используется хэндлером DeleteURLs; вызывается в отдельной горутине, поэтому ошибка
+// возвращается, а не логируется молча: она означает «данные не сохранены».
+// Мягкое удаление поддерживается только PostgreSQL: в файловом режиме возвращается ошибка.
 func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) error {
+	if s.db == nil {
+		return errors.New("storage: мягкое удаление недоступно в файловом режиме хранения")
+	}
+
 	// Объединяем через разделитель "|"
 	suffix := strings.Join(forDel, "|")
 
@@ -350,4 +357,17 @@ func (s *Storage) DeleteUrls(ctx context.Context, usrID int, forDel []string) er
 
 	logrus.Infof("Удалили: %s", suffix)
 	return nil
+}
+
+// Close освобождает пул соединений с PostgreSQL; в файловом режиме ничего не делает.
+//
+// Вызывается при остановке сервиса — после того как дозавершены запросы и фоновые удаления.
+// Повторный вызов безопасен (sql.DB.Close идемпотентен), а указатель на пул сохраняется:
+// операции, дошедшие после закрытия, получают «database is closed» вместо паники.
+func (s *Storage) Close() error {
+	if s.db == nil {
+		return nil
+	}
+
+	return s.db.Close()
 }

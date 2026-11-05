@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -132,8 +133,11 @@ func TestFindGenerated(t *testing.T) {
 		},
 		{
 			name: "пути абсолютные",
-			pkg:  &packages.Package{Dir: "/p", GoFiles: []string{"/p/box_reset_gen.go"}},
-			want: []string{"/p/box_reset_gen.go"},
+			pkg: &packages.Package{
+				Dir:     "/p",
+				GoFiles: []string{absPathForTest()},
+			},
+			want: []string{absPathForTest()},
 		},
 		{
 			name: "файлы других генераторов пропускаются",
@@ -148,6 +152,15 @@ func TestFindGenerated(t *testing.T) {
 			}
 		})
 	}
+}
+
+// absPathForTest возвращает абсолютный путь, понятный filepath.IsAbs на текущей ОС:
+// на Windows — путь с диском, на Unix — Unix-стиль.
+func absPathForTest() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.TempDir(), "p", "box_reset_gen.go")
+	}
+	return "/p/box_reset_gen.go"
 }
 
 func readFile(t *testing.T, path string) string {

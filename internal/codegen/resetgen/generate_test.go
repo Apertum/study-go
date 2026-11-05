@@ -342,12 +342,13 @@ func countWarning(warnings []Warning, part string) int {
 }
 
 // assertGolden сверяет вывод с эталоном; с флагом -update сохраняет текущий вывод.
+// Переводы строк нормализуются в LF, чтобы тесты не зависели от OS (CRLF на Windows, LF на Unix).
 func assertGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
 
 	path := filepath.Join("testdata", "golden", name+".golden")
 	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
+		if err := os.WriteFile(path, normalizeLineEndings(got), 0o644); err != nil {
 			t.Fatalf("сохранение %s: %v", path, err)
 		}
 		return
@@ -357,7 +358,12 @@ func assertGolden(t *testing.T, name string, got []byte) {
 	if err != nil {
 		t.Fatalf("чтение %s: %v (эталон создают прогоном go test -run TestGenerateGolden -update)", path, err)
 	}
-	if !bytes.Equal(want, got) {
+	if !bytes.Equal(normalizeLineEndings(want), normalizeLineEndings(got)) {
 		t.Errorf("вывод не совпал с %s\nхотим:\n%s\nполучено:\n%s", path, want, got)
 	}
+}
+
+// normalizeLineEndings заменяет CRLF на LF — унифицирует переводы строк для кросс-платформенного сравнения.
+func normalizeLineEndings(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 }
