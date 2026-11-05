@@ -17,7 +17,7 @@ const (
 
 // valueDiagnostics — строки журнала, которые ParseFlags печатал и до файла: они показывают
 // итоговые значения настроек независимо от источника и этим изменением не тронуты.
-var valueDiagnostics = []string{"Read addr:", "Read base:", "DSN для подключения к PostgreSQL:"}
+var valueDiagnostics = []string{"Read addr:", "Read base:"}
 
 // writeConfig пишет фикстуру во временный каталог и возвращает путь к файлу.
 func writeConfig(t *testing.T, content string) string {

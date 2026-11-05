@@ -400,6 +400,73 @@ func TestHTTPSStopsBothListeners(t *testing.T) {
 	assert.False(t, acceptsConn(redirectAddr), "адрес редиректа не освобождён")
 }
 
+// TestServeClosesPlanResources: возврат из serve означает выполненный план остановки, а не
+// только отпущенный слушатель — иначе приёмники (файл аудита, хранилище, база) остались бы
+// открытыми. Порядок фаз тот же, что у shutdown.
+func TestServeClosesPlanResources(t *testing.T) {
+	addr, _ := withTestServerConfig(t, false)
+
+	var deletes sync.WaitGroup
+
+	deletesDone := &atomic.Bool{}
+	releaseDeletes := make(chan struct{})
+
+	deletes.Go(func() {
+		<-releaseDeletes
+		deletesDone.Store(true)
+	})
+
+	const events = 2
+
+	subscriber := &gateSubscriber{release: make(chan struct{})}
+
+	central := audit.NewCentral()
+	central.Subscribe(subscriber)
+
+	for i := range events {
+		central.Notify(audit.Event{Timestamp: int64(600 + i), Action: audit.ActionShorten, URL: "https://serve.example"})
+	}
+
+	var mu sync.Mutex
+
+	order := make([]string, 0, 3)
+
+	plan := stopPlan{
+		timeout: 10 * time.Second,
+		deletes: &deletes,
+		audit:   central,
+		closers: []io.Closer{
+			&spyCloser{name: "audit-file", mu: &mu, order: &order, atClose: func() {
+				assert.True(t, deletesDone.Load(), "приёмники закрыты до завершения фонового удаления")
+				assert.Equal(t, events, subscriber.count(), "файл аудита закрыт до доставки событий")
+			}},
+			&spyCloser{name: "store", mu: &mu, order: &order},
+			&spyCloser{name: "db", mu: &mu, order: &order},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	stopped := make(chan error, 1)
+
+	go func() { stopped <- serve(ctx, http.NotFoundHandler(), plan) }()
+
+	waitServing(t, addr)
+
+	cancel()
+	close(releaseDeletes)
+	close(subscriber.release)
+
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve не выполнил план остановки")
+	}
+
+	assert.Equal(t, []string{"audit-file", "store", "db"}, order)
+}
+
 // TestShutdownQuietServersReturnsNil: чистая остановка возвращает nil, приёмники закрыты в
 // порядке плана, а пропущенные фазы (nil) ожиданию не мешают.
 func TestShutdownQuietServersReturnsNil(t *testing.T) {
@@ -561,4 +628,52 @@ func TestShutdownDeadlineKeepsPhaseOrder(t *testing.T) {
 
 	// Истёкший период не отменяет освобождение ресурсов.
 	assert.Equal(t, []string{"audit-file", "store", "db"}, order)
+}
+
+// TestShutdownBoundsDeleteLifecycleByPeriod: контекст фоновых удалений не выводится из
+// контекста сигнала, поэтому зависшее удаление доживает до конца периода до timeout и
+// отменяется только им. Отмена в начале остановки (по сигналу) дала бы запрос в базу уже
+// отменённым и уронила бы эту проверку — ожидание завершилось бы без ошибки периода.
+func TestShutdownBoundsDeleteLifecycleByPeriod(t *testing.T) {
+	main, _ := quietServer(t, "main")
+
+	lifecycle, releaseLifecycle := context.WithCancel(context.Background())
+	defer releaseLifecycle()
+
+	var deletes sync.WaitGroup
+
+	observed := make(chan error, 1)
+
+	deletes.Go(func() {
+		// Так делает Storage.DeleteUrls: удерживает контекст процесса до его отмены.
+		<-lifecycle.Done()
+		observed <- lifecycle.Err()
+	})
+
+	plan := stopPlan{
+		timeout:        500 * time.Millisecond,
+		deletes:        &deletes,
+		releaseDeletes: releaseLifecycle,
+	}
+
+	stopped := make(chan error, 1)
+
+	go func() { stopped <- shutdown([]*http.Server{main}, plan) }()
+
+	var err error
+
+	select {
+	case err = <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("остановка не вернулась по истечении периода")
+	}
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	select {
+	case cause := <-observed:
+		require.ErrorIs(t, cause, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("фоновое удаление не получило отмену к концу остановки")
+	}
 }

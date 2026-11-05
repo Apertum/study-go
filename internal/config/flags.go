@@ -147,7 +147,6 @@ func ParseFlags() error {
 
 	logrus.Info("Read addr: ", Addr)
 	logrus.Info("Read base: ", BaseURL)
-	logrus.Info("DSN для подключения к PostgreSQL: ", DatabaseDSN)
 
 	return nil
 }

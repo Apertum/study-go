@@ -85,10 +85,16 @@ func main() {
 	}
 
 	// SIGTERM, SIGINT и SIGQUIT — запрос плановой остановки: ctx отменяется, и с ним живут
-	// слушатели с фоновыми задачами. Перехват снимает диспозицию ОС, поэтому SIGQUIT не
-	// печатает дамп горутин, а повторный сигнал не обрывает дозавершение.
+	// слушатели. Перехват снимает диспозицию ОС, поэтому SIGQUIT не печатает дамп горутин,
+	// а повторный сигнал не обрывает дозавершение.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stop()
+
+	// Фоновые удаления не выводятся из ctx сигнала: он отменён к моменту остановки, и запрос
+	// в базу ушёл бы уже отменённым. Их контекст живёт до истечения периода остановки, который
+	// отменяет его в shutdown.
+	lifecycle, releaseLifecycle := context.WithCancel(context.Background())
+	defer releaseLifecycle()
 
 	var deletes sync.WaitGroup
 
@@ -111,7 +117,7 @@ func main() {
 	r.Handle("/api/shorten/batch", authMiddleware(handler.ShorterBatchPost(store, central)))
 	r.Handle("/api/user/urls", authMiddleware(handler.ShorterUserURLsGet(db)))
 	r.Get("/{id}", handler.ShorterGet(store, central))
-	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(store, ctx, &deletes)).ServeHTTP)
+	r.Delete("/api/user/urls", authMiddleware(handler.DeleteURLs(store, lifecycle, &deletes)).ServeHTTP)
 
 	// pprof — маршруты для профилирования (требуют авторизацию через AuthMiddleware)
 	// Типа так же, как и другие методы и с той же кукой. Можно еще как-то на другой порт, не смотрел как, попробовать если понадобится.
@@ -121,7 +127,13 @@ func main() {
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)
 
-	plan := stopPlan{deletes: &deletes, audit: central, closers: closers, timeout: shutdownTimeout}
+	plan := stopPlan{
+		deletes:        &deletes,
+		audit:          central,
+		closers:        closers,
+		timeout:        shutdownTimeout,
+		releaseDeletes: releaseLifecycle,
+	}
 
 	// Ошибка сюда приходит либо от слушателя (например занятый адрес), либо от оборванной
 	// остановки; в обоих случаях процесс завершается кодом 1 с причиной. Причина печатается
@@ -138,6 +150,11 @@ func main() {
 type stopPlan struct {
 	deletes *sync.WaitGroup
 	audit   *audit.Central
+
+	// releaseDeletes отменяет контекст фоновых удалений, когда период остановки истёк.
+	// Может быть nil — тогда горутине удаления ограничивает срок только ожидание wg.
+	releaseDeletes context.CancelFunc
+
 	closers []io.Closer
 	timeout time.Duration
 }
@@ -258,6 +275,12 @@ func shutdown(servers []*http.Server, plan stopPlan) error {
 		if err := waitGroup(ctx, plan.deletes); err != nil {
 			errs = append(errs, fmt.Errorf("фоновые удаления: %w", err))
 		}
+	}
+
+	// Срок контекста удалений истекает здесь: он не выводится из контекста сигнала, поэтому
+	// оборванное периодом удаление прекращается до закрытия пула соединений.
+	if plan.releaseDeletes != nil {
+		plan.releaseDeletes()
 	}
 
 	// Неразобранные события аудита теряются при закрытии файла приёмника, поэтому ждутся перед ним.
