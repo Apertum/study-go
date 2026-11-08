@@ -1,0 +1,12 @@
+{
+    "server_address": "localhost:8080",
+    "base_url": "http://localhost:8080/",
+    "file_storage_path": "data.json",
+    "database_dsn": "",
+    "audit_file": "logs/audit.jsonl",
+    "audit_url": "",
+    "enable_https": true,
+    "cert_file": "cert.pem",
+    "key_file": "key.pem",
+    "http_server_address": ":8081"
+}
