@@ -189,7 +189,7 @@ func serve(ctx context.Context, handler http.Handler, plan stopPlan) error {
 	if !config.EnableHTTPS {
 		logrus.Info("Запуск HTTP-сервера на ", config.Addr)
 
-		return waitStop([]*http.Server{server}, []listener{server.ListenAndServe}, ctx, plan)
+		return waitStop(ctx, []*http.Server{server}, []listener{server.ListenAndServe}, plan)
 	}
 
 	// Дальше только HTTPS. Адреса сверяются до bind: иначе второй слушатель падал бы с
@@ -223,9 +223,9 @@ func serve(ctx context.Context, handler http.Handler, plan stopPlan) error {
 	// Редирект останавливается раньше основного сервера, поэтому он первым и в списке
 	// слушателей, и в списке запуска.
 	return waitStop(
+		ctx,
 		[]*http.Server{redirect, server},
 		[]listener{redirect.ListenAndServe, func() error { return server.ListenAndServeTLS("", "") }},
-		ctx,
 		plan,
 	)
 }
@@ -234,7 +234,7 @@ func serve(ctx context.Context, handler http.Handler, plan stopPlan) error {
 // (например занятый адрес) или отмену ctx. Затем выполняет остановку по плану. Причина от
 // слушателя остаётся причиной всего запуска; штатный http.ErrServerClosed сюда не попадает —
 // слушатели закрывает сама остановка.
-func waitStop(servers []*http.Server, listeners []listener, ctx context.Context, plan stopPlan) error {
+func waitStop(ctx context.Context, servers []*http.Server, listeners []listener, plan stopPlan) error {
 	stopped := make(chan error, len(listeners))
 
 	for _, listen := range listeners {
