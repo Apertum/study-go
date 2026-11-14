@@ -42,6 +42,7 @@ func TestFileConfigJSONTags(t *testing.T) {
 	want := []string{
 		"server_address", "base_url", "file_storage_path", "database_dsn", "cookie_key",
 		"audit_file", "audit_url", "enable_https", "cert_file", "key_file", "http_server_address",
+		"trusted_subnet",
 	}
 
 	var got []string

@@ -8,5 +8,6 @@
     "enable_https": true,
     "cert_file": "cert.pem",
     "key_file": "key.pem",
-    "http_server_address": ":8081"
+    "http_server_address": ":8081",
+    "trusted_subnet": "10.0.0.0/8"
 }

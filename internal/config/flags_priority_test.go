@@ -18,6 +18,11 @@ func addrConfig(addr string) string {
 	return `{"server_address": "` + addr + `"}`
 }
 
+// subnetConfig — фикстура с одной настройкой доверенной подсети.
+func subnetConfig(subnet string) string {
+	return `{"trusted_subnet": "` + subnet + `"}`
+}
+
 func TestParseFlagsConfigPathFlags(t *testing.T) {
 	tests := []struct {
 		name string
@@ -315,6 +320,7 @@ func TestParseFlagsFileFillsEverySetting(t *testing.T) {
 		{"сертификат", CertFile, doc.CertFile},
 		{"закрытый ключ", KeyFile, doc.KeyFile},
 		{"адрес редиректа", HTTPRedirectAddr, doc.HTTPServerAddress},
+		{"доверенная подсеть", TrustedSubnet.String(), doc.TrustedSubnet},
 	}
 
 	for _, c := range checks {
@@ -372,5 +378,75 @@ func TestParseFlagsBadEnableHTTPSEnv(t *testing.T) {
 	// Прочие настройки не применяются: решение о завершении процесса принимает вызывающий код.
 	if Addr != ":8080" || AuditFile != "" {
 		t.Errorf("настройки применены до ошибки: адрес %q, файл аудита %q", Addr, AuditFile)
+	}
+}
+
+// TestParseFlagsTrustedSubnetPriority сверяет доверенную подсеть с общим порядком источников:
+// пустое значение в любом источнике молчит, и тогда сеть остаётся нулевой — доступ закрыт.
+func TestParseFlagsTrustedSubnetPriority(t *testing.T) {
+	const fileSubnet = "10.0.0.0/8"
+
+	tests := []struct {
+		env   map[string]string
+		name  string
+		input string
+		want  string
+		args  []string
+	}{
+		{
+			name:  "только файл",
+			input: subnetConfig(fileSubnet),
+			want:  fileSubnet,
+		},
+		{
+			name:  "явный флаг старше файла",
+			input: subnetConfig(fileSubnet),
+			args:  []string{"-t", "192.168.0.0/16"},
+			want:  "192.168.0.0/16",
+		},
+		{
+			name:  "переменная старше файла",
+			input: subnetConfig(fileSubnet),
+			env:   map[string]string{EnvTrustedSubnet: "172.16.0.0/12"},
+			want:  "172.16.0.0/12",
+		},
+		{
+			name:  "переменная старше и флага, и файла",
+			input: subnetConfig(fileSubnet),
+			args:  []string{"-t", "192.168.0.0/16"},
+			env:   map[string]string{EnvTrustedSubnet: "172.16.0.0/12"},
+			want:  "172.16.0.0/12",
+		},
+		{
+			name:  "ключа в файле нет — сеть не задана",
+			input: `{"base_url": "http://из-файла/"}`,
+			want:  "",
+		},
+		{
+			name:  "пустая строка в файле молчит",
+			input: `{"trusted_subnet": ""}`,
+			want:  "",
+		},
+		{
+			name:  "пустая переменная сохраняет файл",
+			input: subnetConfig(fileSubnet),
+			env:   map[string]string{EnvTrustedSubnet: ""},
+			want:  fileSubnet,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parseWith(t, append([]string{"-c", writeConfig(t, tt.input)}, tt.args...), tt.env)
+
+			got := ""
+			if TrustedSubnet.IsValid() {
+				got = TrustedSubnet.String()
+			}
+
+			if got != tt.want {
+				t.Errorf("доверенная подсеть %q, ожидали %q", got, tt.want)
+			}
+		})
 	}
 }

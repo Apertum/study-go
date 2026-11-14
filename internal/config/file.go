@@ -39,6 +39,7 @@ type fileConfig struct {
 	CertFile          string `json:"cert_file"`
 	KeyFile           string `json:"key_file"`
 	HTTPServerAddress string `json:"http_server_address"`
+	TrustedSubnet     string `json:"trusted_subnet"`
 }
 
 // readFileConfig читает файл и разбирает его целиком как строгий JSON: ни `//`-,

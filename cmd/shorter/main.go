@@ -39,7 +39,8 @@ func init() {
 
 func main() {
 	// Конфигурация обязана быть итоговой до первой строки, которая читает настройки.
-	// Неразбираемое ENABLE_HTTPS завершает процесс здесь — до хранилища, файла аудита и базы.
+	// Неразбираемое ENABLE_HTTPS или trusted_subnet завершают процесс здесь — до хранилища,
+	// файла аудита и базы.
 	if err := config.ParseFlags(); err != nil {
 		logrus.Fatal(err)
 	}
@@ -123,6 +124,16 @@ func main() {
 	// Типа так же, как и другие методы и с той же кукой. Можно еще как-то на другой порт, не смотрел как, попробовать если понадобится.
 	r.Handle("/debug/pprof/*", authMiddleware(handler.PprofHandler(store, central)))
 	r.Get("/debug/pprof/", authMiddleware(handler.PprofHandler(store, central)).ServeHTTP)
+
+	// Внутренние эндпоинты — подсетевой контроль вместо куки: TrustedSubnetGate отвечает 403
+	// раньше обработчика, поэтому отказ по сети не выдаёт состояние базы. Пустая настройка
+	// разобрана в ParseFlags как нулевой префикс, и тогда доступ закрыт для всех.
+	statsReader := handler.StatsFromDB(db)
+
+	r.Route("/api/internal", func(r chi.Router) {
+		r.Use(handler.TrustedSubnetGate(config.TrustedSubnet))
+		r.Get("/stats", handler.ShorterStats(statsReader))
+	})
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)

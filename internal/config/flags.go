@@ -2,9 +2,9 @@
 //
 // Переменные пакета заполняются при вызове ParseFlags() из main(). Источников три:
 //   - переменные окружения: SERVER_ADDRESS, BASE_URL, FILE_STORAGE_PATH, DATABASE_DSN, COOKIE_KEY,
-//     AUDIT_FILE, AUDIT_URL, ENABLE_HTTPS, CERT_FILE, KEY_FILE, HTTP_SERVER_ADDRESS;
+//     AUDIT_FILE, AUDIT_URL, ENABLE_HTTPS, CERT_FILE, KEY_FILE, HTTP_SERVER_ADDRESS, TRUSTED_SUBNET;
 //   - флаги командной строки (-a, -b, -f, -d, -k, -audit-file, -audit-url, -s, -cert-file,
-//     -key-file, -http-addr);
+//     -key-file, -http-addr, -t);
 //   - JSON-файл конфигурации: путь задаётся флагом -c (он же -config) либо переменной CONFIG.
 //
 // Порядок источников для каждой настройки: непустая переменная окружения > явно переданный флаг >
@@ -16,11 +16,16 @@
 // Значение ENABLE_HTTPS разбирает ParseFlags(): переменная важнее флага -s и файла, а неразбираемое
 // значение возвращается ошибкой, чтобы main завершился до прослушивания портов. ParseEnabled остаётся
 // экспортной для клиента cmd/shortener — у него собственный набор флагов.
+//
+// Значение trusted_subnet разбирает тоже ParseFlags(): настройка задаёт сеть доступа к внутренним
+// эндпоинтам, и опечатка в ней не должна доживать до первого запроса. Неразбираемое значение
+// возвращается той же ошибкой; пустое значение — не ошибка, а «сеть не задана».
 package config
 
 import (
 	"flag"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 
@@ -29,6 +34,9 @@ import (
 
 // EnvEnableHTTPS — имя переменной окружения, включающей HTTPS.
 const EnvEnableHTTPS = "ENABLE_HTTPS"
+
+// EnvTrustedSubnet — имя переменной окружения с доверенной подсетью внутренних эндпоинтов.
+const EnvTrustedSubnet = "TRUSTED_SUBNET"
 
 // Экспортированные переменные конфигурации, заполняемые ParseFlags().
 //
@@ -79,7 +87,16 @@ var (
 	// HTTPRedirectAddr — адрес HTTP-слушателя, который редиректит запросы на HTTPS.
 	// Флаг: -http-addr | ENV: HTTP_SERVER_ADDRESS
 	HTTPRedirectAddr string
+
+	// TrustedSubnet — сеть, из которой доступен GET /api/internal/stats. Нулевое значение
+	// (IsValid() == false) означает «настройка не задана»: тогда эндпоинт закрыт для всех.
+	// Флаг: -t | ENV: TRUSTED_SUBNET | ключ файла: trusted_subnet
+	TrustedSubnet netip.Prefix
 )
+
+// trustedSubnetRaw — сырое значение -t до разбора: в пакете настройка живёт уже разобранной
+// сетью, а flag.StringVar требует адрес строковой переменной.
+var trustedSubnetRaw string
 
 // ParseFlags заполняет экспортированные переменные конфигурации пакета флагами,
 // переменными окружения и JSON-файлом.
@@ -90,7 +107,8 @@ var (
 // и настройкам не вредят — частичных значений из неразобранного файла не бывает.
 //
 // Ошибка возвращается, когда ENABLE_HTTPS непустая и не разбирается как логическое значение:
-// включённый HTTPS не должен молча превращаться в открытый HTTP. Вызывается из main().
+// включённый HTTPS не должен молча превращаться в открытый HTTP. Та же участь у неразбираемого
+// trusted_subnet — сеть доступа к внутренним эндпоинтам. Вызывается из main().
 func ParseFlags() error {
 	logrus.Info("Start ParseFlags")
 	// как аргумент -a со значением :8080 по умолчанию
@@ -105,6 +123,7 @@ func ParseFlags() error {
 	flag.StringVar(&CertFile, "cert-file", "cert.pem", "путь к PEM-сертификату TLS")
 	flag.StringVar(&KeyFile, "key-file", "key.pem", "путь к PEM-закрытому ключу TLS")
 	flag.StringVar(&HTTPRedirectAddr, "http-addr", ":8081", "адрес HTTP-слушателя редиректа на HTTPS")
+	flag.StringVar(&trustedSubnetRaw, "t", "", "CIDR доверенной подсети для GET /api/internal/stats")
 	// оба имени пишут в одну переменную: -c и -config — синонимы одной настройки
 	flag.StringVar(&ConfigFile, "c", "", "путь к JSON-файлу конфигурации")
 	flag.StringVar(&ConfigFile, "config", "", "путь к JSON-файлу конфигурации")
@@ -130,6 +149,17 @@ func ParseFlags() error {
 	}
 
 	EnableHTTPS = enabled
+
+	// Доверенная подсеть разбирается следом и по той же причине: неверная сеть доступа
+	// к внутренним эндпоинтам должна остановить запуск, а не обнаружиться первым запросом.
+	subnetRaw, subnetSource := trustedSubnetSource(os.Getenv(EnvTrustedSubnet), set["t"], trustedSubnetRaw, doc.TrustedSubnet)
+
+	subnet, err := ParseTrustedSubnet(subnetSource, subnetRaw)
+	if err != nil {
+		return err
+	}
+
+	TrustedSubnet = subnet
 
 	// для случаев, когда в переменной окружения SERVER_ADDRESS присутствует непустое значение,
 	// переопределим адрес запуска сервера,
@@ -166,6 +196,41 @@ func resolveString(envValue string, flagSet bool, flagValue, fileValue string) s
 		return fileValue
 	default:
 		return flagValue
+	}
+}
+
+// ParseTrustedSubnet разбирает значение настройки trusted_subnet: сеть в нотации CIDR
+// («10.0.0.0/8», «fd00::/8»). Пустое значение означает «настройка не задана» и даёт нулевой
+// префикс без ошибки — доступ к внутренним эндпоинтам тогда закрыт для всех. Одиночный адрес
+// без префикса длины — ошибка: настройка описывает сеть, а не адрес. source — имя источника
+// из trustedSubnetSource, чтобы в ошибке было видно, какой способ задания править; содержимое
+// файла конфигурации в текст не попадает.
+func ParseTrustedSubnet(source, raw string) (netip.Prefix, error) {
+	if raw == "" {
+		return netip.Prefix{}, nil
+	}
+
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%s=%q: нужна сеть в нотации CIDR, например 10.0.0.0/8: %w", source, raw, err)
+	}
+
+	return prefix, nil
+}
+
+// trustedSubnetSource возвращает значение доверенной подсети старшего непустого источника
+// и имя этого источника для текста ошибки. Порядок источников общий для всех настроек пакета:
+// непустая переменная, затем явно переданный флаг, затем файл, затем значение флага.
+func trustedSubnetSource(envValue string, flagSet bool, flagValue, fileValue string) (value, source string) {
+	switch {
+	case envValue != "":
+		return envValue, EnvTrustedSubnet
+	case flagSet:
+		return flagValue, "-t"
+	case fileValue != "":
+		return fileValue, "ключ trusted_subnet файла конфигурации"
+	default:
+		return flagValue, "-t"
 	}
 }
 
