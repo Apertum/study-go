@@ -54,7 +54,12 @@ func handleConn(conn net.Conn) {
 
 // handleConn обрабатывает запросы и вычисляет среднее арифметическое. Вместо main
 func handleConnSum(c net.Conn) {
-	defer c.Close()
+	defer func(c net.Conn) {
+		err := c.Close()
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
+	}(c)
 	for {
 		MaxLen := 1024
 		in := make([]byte, MaxLen)
@@ -63,7 +68,7 @@ func handleConnSum(c net.Conn) {
 			panic(err)
 		}
 		var sum int
-		for i := 0; i < n; i++ {
+		for i := range n {
 			sum += int(in[i])
 		}
 		if _, err = c.Write([]byte{byte(sum / n)}); err != nil {
@@ -78,7 +83,12 @@ func TCPServer(addr *net.TCPAddr) {
 	if err != nil {
 		panic(err)
 	}
-	defer l.Close()
+	defer func(l *net.TCPListener) {
+		err := l.Close()
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
+	}(l)
 
 	for {
 		c, err := l.Accept()
