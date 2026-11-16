@@ -2,9 +2,10 @@
 //
 // Переменные пакета заполняются при вызове ParseFlags() из main(). Источников три:
 //   - переменные окружения: SERVER_ADDRESS, BASE_URL, FILE_STORAGE_PATH, DATABASE_DSN, COOKIE_KEY,
-//     AUDIT_FILE, AUDIT_URL, ENABLE_HTTPS, CERT_FILE, KEY_FILE, HTTP_SERVER_ADDRESS, TRUSTED_SUBNET;
+//     AUDIT_FILE, AUDIT_URL, ENABLE_HTTPS, CERT_FILE, KEY_FILE, HTTP_SERVER_ADDRESS, TRUSTED_SUBNET,
+//     GRPC_ADDRESS;
 //   - флаги командной строки (-a, -b, -f, -d, -k, -audit-file, -audit-url, -s, -cert-file,
-//     -key-file, -http-addr, -t);
+//     -key-file, -http-addr, -t, -grpc-addr);
 //   - JSON-файл конфигурации: путь задаётся флагом -c (он же -config) либо переменной CONFIG.
 //
 // Порядок источников для каждой настройки: непустая переменная окружения > явно переданный флаг >
@@ -20,11 +21,15 @@
 // Значение trusted_subnet разбирает тоже ParseFlags(): настройка задаёт сеть доступа к внутренним
 // эндпоинтам, и опечатка в ней не должна доживать до первого запроса. Неразбираемое значение
 // возвращается той же ошибкой; пустое значение — не ошибка, а «сеть не задана».
+//
+// Адрес gRPC разбирается тем же порядком: неразбираемое значение (не указано либо порт не число)
+// останавливает запуск ошибкой до того, как применится любая прочая настройка.
 package config
 
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -37,6 +42,15 @@ const EnvEnableHTTPS = "ENABLE_HTTPS"
 
 // EnvTrustedSubnet — имя переменной окружения с доверенной подсетью внутренних эндпоинтов.
 const EnvTrustedSubnet = "TRUSTED_SUBNET"
+
+// EnvGRPCAddress — имя переменной окружения с адресом gRPC-сервера.
+const EnvGRPCAddress = "GRPC_ADDRESS"
+
+// Границы номера порта: 0 зарезервирован под «выбрать порт», вне диапазона порт не существует.
+const (
+	minPort = 1
+	maxPort = 65535
+)
 
 // Экспортированные переменные конфигурации, заполняемые ParseFlags().
 //
@@ -88,6 +102,11 @@ var (
 	// Флаг: -http-addr | ENV: HTTP_SERVER_ADDRESS
 	HTTPRedirectAddr string
 
+	// GRPCAddr — адрес и порт gRPC-сервера (например, ":8082"). Транспорт идёт открытым текстом
+	// независимо от EnableHTTPS.
+	// Флаг: -grpc-addr | ENV: GRPC_ADDRESS | ключ файла: grpc_address
+	GRPCAddr string
+
 	// TrustedSubnet — сеть, из которой доступен GET /api/internal/stats. Нулевое значение
 	// (IsValid() == false) означает «настройка не задана»: тогда эндпоинт закрыт для всех.
 	// Флаг: -t | ENV: TRUSTED_SUBNET | ключ файла: trusted_subnet
@@ -108,7 +127,9 @@ var trustedSubnetRaw string
 //
 // Ошибка возвращается, когда ENABLE_HTTPS непустая и не разбирается как логическое значение:
 // включённый HTTPS не должен молча превращаться в открытый HTTP. Та же участь у неразбираемого
-// trusted_subnet — сеть доступа к внутренним эндпоинтам. Вызывается из main().
+// trusted_subnet — сеть доступа к внутренним эндпоинтам — и у неразбираемого адреса gRPC.
+// Проверки идут до заполнения прочих настроек, поэтому при отказе ни одна настройка не применена.
+// Вызывается из main().
 func ParseFlags() error {
 	logrus.Info("Start ParseFlags")
 	// как аргумент -a со значением :8080 по умолчанию
@@ -123,6 +144,7 @@ func ParseFlags() error {
 	flag.StringVar(&CertFile, "cert-file", "cert.pem", "путь к PEM-сертификату TLS")
 	flag.StringVar(&KeyFile, "key-file", "key.pem", "путь к PEM-закрытому ключу TLS")
 	flag.StringVar(&HTTPRedirectAddr, "http-addr", ":8081", "адрес HTTP-слушателя редиректа на HTTPS")
+	flag.StringVar(&GRPCAddr, "grpc-addr", ":8082", "адрес gRPC-сервера")
 	flag.StringVar(&trustedSubnetRaw, "t", "", "CIDR доверенной подсети для GET /api/internal/stats")
 	// оба имени пишут в одну переменную: -c и -config — синонимы одной настройки
 	flag.StringVar(&ConfigFile, "c", "", "путь к JSON-файлу конфигурации")
@@ -160,6 +182,17 @@ func ParseFlags() error {
 	}
 
 	TrustedSubnet = subnet
+
+	// Адрес gRPC разбирается следом и по той же причине: процесс не должен успеть применить
+	// половину конфигурации, если слушать по указанному адресу невозможно.
+	grpcAddr, grpcSource := namedString(os.Getenv(EnvGRPCAddress), set["grpc-addr"], GRPCAddr, doc.GRPCAddress,
+		EnvGRPCAddress, "-grpc-addr", "grpc_address")
+
+	if err := CheckListenAddr(grpcSource, grpcAddr); err != nil {
+		return err
+	}
+
+	GRPCAddr = grpcAddr
 
 	// для случаев, когда в переменной окружения SERVER_ADDRESS присутствует непустое значение,
 	// переопределим адрес запуска сервера,
@@ -199,6 +232,42 @@ func resolveString(envValue string, flagSet bool, flagValue, fileValue string) s
 	}
 }
 
+// namedString выбирает значение по тому же порядку источников, что resolveString, и возвращает
+// имя старшего применимого источника: настройка, которая умеет отказывать при разборе, обязана
+// назвать в ошибке способ задания, а не «значение где-то».
+func namedString(envValue string, flagSet bool, flagValue, fileValue, envName, flagName, fileKey string) (value, source string) {
+	switch {
+	case envValue != "":
+		return envValue, envName
+	case flagSet:
+		return flagValue, flagName
+	case fileValue != "":
+		return fileValue, "ключ " + fileKey + " файла конфигурации"
+	default:
+		return flagValue, flagName
+	}
+}
+
+// CheckListenAddr проверяет значение адреса слушателя: хост (пустой — «все интерфейсы») и
+// числовой порт от 1 до 65535. Пустое значение — тоже ошибка: без порта слушать нечего.
+//
+// source — имя источника из namedString, чтобы в ошибке было видно, какой способ задания править;
+// содержимое файла конфигурации в текст не попадает — там cookie_key и DSN с паролем. Проверка
+// локальная: ни DNS, ни тем более соединений не выполняется.
+func CheckListenAddr(source, raw string) error {
+	_, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return fmt.Errorf("%s=%q: нужен адрес вида host:port либо :port: %w", source, raw, err)
+	}
+
+	number, err := strconv.Atoi(port)
+	if err != nil || number < minPort || number > maxPort {
+		return fmt.Errorf("%s=%q: порт должен быть числом от %d до %d", source, raw, minPort, maxPort)
+	}
+
+	return nil
+}
+
 // ParseTrustedSubnet разбирает значение настройки trusted_subnet: сеть в нотации CIDR
 // («10.0.0.0/8», «fd00::/8»). Пустое значение означает «настройка не задана» и даёт нулевой
 // префикс без ошибки — доступ к внутренним эндпоинтам тогда закрыт для всех. Одиночный адрес
@@ -222,16 +291,7 @@ func ParseTrustedSubnet(source, raw string) (netip.Prefix, error) {
 // и имя этого источника для текста ошибки. Порядок источников общий для всех настроек пакета:
 // непустая переменная, затем явно переданный флаг, затем файл, затем значение флага.
 func trustedSubnetSource(envValue string, flagSet bool, flagValue, fileValue string) (value, source string) {
-	switch {
-	case envValue != "":
-		return envValue, EnvTrustedSubnet
-	case flagSet:
-		return flagValue, "-t"
-	case fileValue != "":
-		return fileValue, "ключ trusted_subnet файла конфигурации"
-	default:
-		return flagValue, "-t"
-	}
+	return namedString(envValue, flagSet, flagValue, fileValue, EnvTrustedSubnet, "-t", "trusted_subnet")
 }
 
 // resolveBool выбирает значение логической настройки по тому же порядку источников.

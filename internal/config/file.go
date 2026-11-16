@@ -40,6 +40,7 @@ type fileConfig struct {
 	KeyFile           string `json:"key_file"`
 	HTTPServerAddress string `json:"http_server_address"`
 	TrustedSubnet     string `json:"trusted_subnet"`
+	GRPCAddress       string `json:"grpc_address"`
 }
 
 // readFileConfig читает файл и разбирает его целиком как строгий JSON: ни `//`-,

@@ -17,35 +17,50 @@ package handler
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 	"study-go.ru/cho/eto/internal/audit"
+	"study-go.ru/cho/eto/internal/authn"
 	"study-go.ru/cho/eto/internal/config"
+	"study-go.ru/cho/eto/internal/shorten"
 	"study-go.ru/cho/eto/internal/storage"
 )
 
 // контекстный ключ для user ID
 type contextKey struct{}
 
-// generateID создаёт случайный короткий ID
-func generateID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+// Хранилище и центр аудита удовлетворяют зависимостям доменного слоя: проверка на этапе
+// компиляции дешевле, чем проверка в рантайме.
+var (
+	_ shorten.ShortStore = (*storage.Storage)(nil)
+	_ shorten.Auditor    = (*audit.Central)(nil)
+)
+
+// generateID создаёт случайный короткий ID.
+//
+// Имя сохранено: тесты пакета обращаются к функции напрямую.
+func generateID() string { return shorten.GenerateID() }
+
+// newService собирает доменный слой. Проверка central != nil обязательна: nil-указатель,
+// положенный в интерфейс, был бы значением, не равным nil, и аудит пытались бы ставить
+// через него.
+func newService(s *storage.Storage, central *audit.Central) *shorten.Service {
+	var auditor shorten.Auditor
+	if central != nil {
+		auditor = central
+	}
+
+	return &shorten.Service{Store: s, Audit: auditor, BaseURL: config.BaseURL}
 }
 
 // ShorterPost обрабатывает POST-запросы на пути / и /api/shorten.
@@ -71,6 +86,8 @@ func generateID() string {
 //
 //	{"short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/very/long/path"}
 func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
+	svc := newService(s, central)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -100,36 +117,19 @@ func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 			return
 		}
 
-		// генерируем ID и сохраняем
-		shortID := config.BaseURL + generateID()
-		uuid := s.NextID()
-
-		err = s.PutUnique(uuid, shortID, longURL, usrID)
+		result, err := svc.Shorten(usrID, longURL)
 		if err != nil {
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" { //  а как ещё
-				if existingShortURL, exists := s.GetByOriginalURL(longURL); exists {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusConflict)
-					json.NewEncoder(w).Encode(map[string]string{
-						"short_url":    existingShortURL,
-						"original_url": longURL,
-					})
-					return
-				}
+			if dup, ok := errors.AsType[*shorten.DuplicateError](err); ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{
+					"short_url":    dup.ShortURL,
+					"original_url": longURL,
+				})
+				return
 			}
 			http.Error(w, "Failed to save", http.StatusConflict)
 			return
-		}
-
-		// Аудит после успешного сохранения
-		if central != nil {
-			userIDStr := strconv.FormatInt(int64(usrID), 10)
-			central.Notify(audit.Event{
-				Timestamp: time.Now().Unix(),
-				Action:    audit.ActionShorten,
-				UserID:    userIDStr,
-				URL:       longURL,
-			})
 		}
 
 		// возвращаем короткий ID
@@ -139,9 +139,9 @@ func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 		// можно вызвать только один раз за один
 		w.WriteHeader(http.StatusCreated) // Возвращает статус 201
 		json.NewEncoder(w).Encode(map[string]string{
-			"uuid":         uuid,
-			"short_url":    shortID,
-			"original_url": longURL,
+			"uuid":         result.UUID,
+			"short_url":    result.ShortURL,
+			"original_url": result.OriginalURL,
 		})
 	}
 }
@@ -267,30 +267,22 @@ func ShorterBatchPost(s *storage.Storage, central *audit.Central) http.HandlerFu
 //	HTTP/1.1 307 Temporary Redirect
 //	Location: https://example.com/very/long/path
 func ShorterGet(s *storage.Storage, central *audit.Central) http.HandlerFunc {
+	svc := newService(s, central)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
-		longURL, deleted, err := s.Get(id)
-		if err != nil || longURL == "" {
-			logrus.Error("Not found by ERROR. ", http.StatusNotFound)
-			http.Error(w, "Not found", http.StatusNotFound)
-			return
-		}
-
-		if longURL != "" && deleted {
+		longURL, err := svc.Expand(id)
+		if errors.Is(err, shorten.ErrGone) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGone)
 			json.NewEncoder(w).Encode("{\"url\": \"Gone\"}")
 			return
 		}
-
-		// Аудит прохождения по ссылке
-		if central != nil {
-			central.Notify(audit.Event{
-				Timestamp: time.Now().Unix(),
-				Action:    audit.ActionFollow,
-				URL:       longURL,
-			})
+		if err != nil {
+			logrus.Error("Not found by ERROR. ", http.StatusNotFound)
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
 		}
 
 		// перенаправляем на оригинальный URL
@@ -332,43 +324,28 @@ func ShorterPing(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// signinCookie создаёт HMAC-SHA256 подпись для payload и возвращает строку signature.
-// SigninCookie — экспортированная версия для тестов.
-func signinCookie(cookieKey, payload string) string {
-	h := hmac.New(sha256.New, []byte(cookieKey))
-	h.Write([]byte(payload))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 // SigninCookieForTest генерирует HMAC-SHA256 подпись для заданных cookieKey и payload.
 //
-// Экспортирована исключительно для использования в тестах.
-// В production используется неприватная signinCookie().
+// Экспортирована исключительно для использования в тестах. Подпись создаёт общий
+// authn.Sign — его же проверяют HTTP-middleware и gRPC-адаптер.
 func SigninCookieForTest(cookieKey, payload string) string {
-	return signinCookie(cookieKey, payload)
-}
-
-// verifyCookie проверяет HMAC-SHA256 подпись и возвращает payload при успешной валидации.
-// Используется Internally в AuthMiddleware для проверки куки пользователя.
-func verifyCookie(cookieKey, payload, signature string) (string, error) {
-	expectedSig := signinCookie(cookieKey, payload)
-	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
-		return "", http.ErrAbortHandler
-	}
-	return payload, nil
+	return authn.Sign(cookieKey, payload)
 }
 
 // AuthMiddleware — HTTP-middleware для проверки авторизации через куку user_id.
 //
 // Работает по следующему алгоритму:
 //  1. Читает куку user_id; если отсутствует — возвращает 401 Unauthorized.
-//  2. Извлекает payload (user ID) и HMAC-SHA256 подпись из куки в формате "payload:signature".
-//  3. Проверяет валидность подписи через HMAC-SHA256. Если не совпадает — 401 Unauthorized.
-//  4. Проверяет существование пользователя в БД; если не найден — 403 Forbidden.
-//  5. В случае успеха кладёт user ID в контекст и передаёт запрос дальше.
+//  2. Проверяет значение вида "payload:signature" общим разбором authn.Verify — тем же,
+//     которым gRPC-адаптер проверяет metadata authorization.
+//  3. Отказ по форме или подписи — 401 Unauthorized, отсутствие пользователя в БД —
+//     403 Forbidden, ошибка БД — 500 Internal server error.
+//  4. В случае успеха кладёт user ID в контекст и передаёт запрос дальше.
 //
 // Применяется ко всем защищённым маршрутам в main.go.
 func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
+	users := authn.PostgresUsers{DB: db}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("user_id")
@@ -377,35 +354,15 @@ func AuthMiddleware(db *sql.DB) func(http.Handler) http.Handler {
 				return
 			}
 
-			// parse "payload:signature"
-			parts := strings.SplitN(cookie.Value, ":", 3)
-			if len(parts) != 2 {
+			usrID, err := authn.Verify(r.Context(), cookie.Value, config.CookieKey, users)
+			switch {
+			case errors.Is(err, authn.ErrUnauthenticated):
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
-			}
-
-			payload, signature := parts[0], parts[1]
-
-			// верифицируем HMAC
-			if _, err = verifyCookie(config.CookieKey, payload, signature); err != nil {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			// извлекаем user ID
-			usrID, err := strconv.Atoi(payload)
-			if err != nil {
+			case errors.Is(err, authn.ErrUserNotFound):
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
-			}
-
-			// проверяем что пользователь существует в БД
-			var exists int
-			err = db.QueryRowContext(r.Context(), "SELECT 1 FROM usr WHERE id = $1", usrID).Scan(&exists)
-			if err == sql.ErrNoRows {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			} else if err != nil {
+			case err != nil:
 				logrus.WithError(err).Error("AuthMiddleware DB error")
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
@@ -474,8 +431,8 @@ func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
 		}
 
 		// Формируем payload и подпись
-		payload := fmt.Sprintf("%d", usrID)
-		signature := signinCookie(config.CookieKey, payload)
+		payload := strconv.Itoa(usrID)
+		signature := authn.Sign(config.CookieKey, payload)
 
 		// Устанавливаем куку: значение = "payload:signature"
 		cookie := &http.Cookie{
@@ -511,6 +468,8 @@ func ShorterLoginPost(db *sql.DB) http.HandlerFunc {
 //
 //	[{"short_url":"http://short.ru/a1b2c3d4","original_url":"https://example.com/one"}]
 func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
+	svc := &shorten.Service{URLs: shorten.PostgresUserURLReader{DB: db}}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		// извлекаем usrID из контекста (установлен AuthMiddleware)
 		usrID, ok := r.Context().Value(contextKey{}).(int)
@@ -519,39 +478,14 @@ func ShorterUserURLsGet(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		type urlEntry struct {
-			ShortURL    string `json:"short_url"`
-			OriginalURL string `json:"original_url"`
-		}
-
-		rows, err := db.QueryContext(r.Context(),
-			"SELECT short_url, original_url FROM url_srv WHERE usr_id = $1 ORDER BY id",
-			usrID,
-		)
+		urls, err := svc.UserURLs(r.Context(), usrID)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to query user URLs")
 			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
 
-		var urls []urlEntry
-		for rows.Next() {
-			var entry urlEntry
-			if err := rows.Scan(&entry.ShortURL, &entry.OriginalURL); err != nil {
-				logrus.WithError(err).Error("Failed to scan URL row")
-				http.Error(w, "Database error", http.StatusInternalServerError)
-				return
-			}
-			urls = append(urls, entry)
-		}
-		if err := rows.Err(); err != nil {
-			logrus.WithError(err).Error("Error iterating URL rows")
-			http.Error(w, "Database error", http.StatusInternalServerError)
-			return
-		}
-
-		if urls == nil || len(urls) == 0 {
+		if len(urls) == 0 {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

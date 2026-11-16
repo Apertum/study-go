@@ -16,7 +16,7 @@ import (
 var envNames = []string{
 	"SERVER_ADDRESS", "BASE_URL", "FILE_STORAGE_PATH", "DATABASE_DSN", "COOKIE_KEY",
 	"AUDIT_FILE", "AUDIT_URL", EnvEnableHTTPS, "CERT_FILE", "KEY_FILE", "HTTP_SERVER_ADDRESS", EnvConfig,
-	EnvTrustedSubnet,
+	EnvTrustedSubnet, EnvGRPCAddress,
 }
 
 // parseWith изображает запуск процесса: заново создаёт набор флагов и применяет аргументы с переменными.
