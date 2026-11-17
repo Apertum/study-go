@@ -28,37 +28,28 @@ var errNoStatsSource = errors.New("источник счётчиков не за
 
 // StatsReader — источник счётчиков для GET /api/internal/stats. Зависимость намеренно уже, чем
 // весь слой хранения: счётчики идут напрямую в базу, потому что у файтового хранилища нет ни
-// таблицы пользователей, ни признака удаления.
-type StatsReader interface {
-	row(ctx context.Context, query string) statsRow
-}
-
-// statsRow — строка с одним числом. Абстракция нужна двойникам тестов: *sql.Row нельзя ни создать
-// со значением, ни проверить без обращения к базе.
-type statsRow interface {
-	Scan(dest ...any) error
-}
-
-// dbStats приспосабливает соединение с PostgreSQL к StatsReader.
-type dbStats struct {
-	db *sql.DB
-}
-
-func (s dbStats) row(ctx context.Context, query string) statsRow {
-	return s.db.QueryRowContext(ctx, query)
-}
+// таблицы пользователей, ни признака удаления. Одна функция вместо интерфейса: единственное
+// действие источника — выполнить запрос и вернуть число; *sql.Row со значением не построить,
+// поэтому готовое int64 избавляет двойников тестов от прослойки для строки.
+type StatsReader func(ctx context.Context, query string) (int64, error)
 
 // StatsFromDB возвращает читателя счётчиков для соединения с базой.
 //
-// Нулевое соединение отдаёт как nil, а не как обёртку над ним: nil внутри интерфейса перестал бы
-// быть nil, и проверка ниже не спасла бы от обращения к полям отсутствующего пула соединений.
+// Нулевое соединение отдаёт как nil, а не как обёртку над ним: у функции nil и есть nil,
+// поэтому проверка нулевого источника в loadStats не обманывается указателем внутри интерфейса.
 // Сервис продолжает работать без базы, поэтому отсутствие источника — штатный случай, отвечающий 503.
 func StatsFromDB(db *sql.DB) StatsReader {
 	if db == nil {
 		return nil
 	}
 
-	return dbStats{db: db}
+	return func(ctx context.Context, query string) (int64, error) {
+		var count int64
+
+		err := db.QueryRowContext(ctx, query).Scan(&count)
+
+		return count, err
+	}
 }
 
 // statsResponse — тело ответа эндпоинта: ровно два числовых поля в указанном порядке.
@@ -106,15 +97,15 @@ func loadStats(ctx context.Context, reader StatsReader) (statsResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, statsQueryTimeout)
 	defer cancel()
 
-	var stats statsResponse
-
-	if err := reader.row(ctx, statsURLsQuery).Scan(&stats.URLs); err != nil {
+	urls, err := reader(ctx, statsURLsQuery)
+	if err != nil {
 		return statsResponse{}, fmt.Errorf("число сокращений: %w", err)
 	}
 
-	if err := reader.row(ctx, statsUsersQuery).Scan(&stats.Users); err != nil {
+	users, err := reader(ctx, statsUsersQuery)
+	if err != nil {
 		return statsResponse{}, fmt.Errorf("число пользователей: %w", err)
 	}
 
-	return stats, nil
+	return statsResponse{URLs: urls, Users: users}, nil
 }

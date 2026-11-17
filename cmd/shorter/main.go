@@ -330,25 +330,15 @@ func grpcListener(plan stopPlan) listener {
 }
 
 // stopGRPC отпускает gRPC-сервер: начатые вызовы дозавершаются, новые получают UNAVAILABLE.
-// У GracefulStop нет параметра контекста, поэтому срок держит вызывающий код: по истечении
+// У GracefulStop нет параметра контекста, поэтому срок держит awaitDone: по истечении
 // сервер обрывается принудительно, а причина возвращается ошибкой — зависший вызов не должен
 // держать процесс дольше периода остановки.
 func stopGRPC(ctx context.Context, server *grpc.Server) error {
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		server.GracefulStop()
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		server.Stop()
-
-		return fmt.Errorf("ожидание начатых вызовов: %w", ctx.Err())
+	if err := awaitDone(ctx, server.GracefulStop, server.Stop); err != nil {
+		return fmt.Errorf("ожидание начатых вызовов: %w", err)
 	}
+
+	return nil
 }
 
 // waitStop поднимает все слушатели и ждёт первую причину остановиться: отказ одного из них
@@ -401,7 +391,7 @@ func shutdown(servers []*http.Server, plan stopPlan) error {
 
 	// Фоновые удаления пишут в хранилище и базу, поэтому их ждут до закрытия приёмников.
 	if plan.deletes != nil {
-		if err := waitGroup(ctx, plan.deletes); err != nil {
+		if err := awaitDone(ctx, plan.deletes.Wait, nil); err != nil {
 			errs = append(errs, fmt.Errorf("фоновые удаления: %w", err))
 		}
 	}
@@ -429,20 +419,26 @@ func shutdown(servers []*http.Server, plan stopPlan) error {
 	return errors.Join(errs...)
 }
 
-// waitGroup ждёт завершения группы не дольше ctx: зависшая фоновая задача не должна держать
-// процесс дольше одного периода до timeout на остановку.
-func waitGroup(ctx context.Context, wg *sync.WaitGroup) error {
+// awaitDone ждёт завершения wait не дольше ctx — период остановки общий для всех фаз, и
+// зависшая задача не должна держать процесс дольше него. По истечении срока вызывается stop:
+// у фазы может быть свой способ прерваться принудительно (как Stop у gRPC-сервера). Причиной
+// остаётся истечение ожидания.
+func awaitDone(ctx context.Context, wait, stop func()) error {
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		wg.Wait()
+		wait()
 	}()
 
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		if stop != nil {
+			stop()
+		}
+
 		return ctx.Err()
 	}
 }

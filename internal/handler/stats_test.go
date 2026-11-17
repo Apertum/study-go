@@ -17,7 +17,7 @@ import (
 )
 
 // statsFake — двойник источника счётчиков: запоминает текст и порядок запросов и отвечает
-// значениями либо ошибкой по тексту запроса.
+// значениями либо ошибкой по тексту запроса. В таблицах тестов передаётся методом read.
 type statsFake struct {
 	values map[string]int64
 	errs   map[string]error
@@ -25,35 +25,18 @@ type statsFake struct {
 	order  []string
 }
 
-func (f *statsFake) row(ctx context.Context, query string) statsRow {
+func (f *statsFake) read(ctx context.Context, query string) (int64, error) {
 	f.order = append(f.order, query)
 
 	if f.hook != nil {
 		f.hook(ctx, query)
 	}
 
-	return statsFakeRow{value: f.values[query], err: f.errs[query]}
-}
-
-// statsFakeRow — строка с числом, заданным фикстурой.
-type statsFakeRow struct {
-	err   error
-	value int64
-}
-
-func (r statsFakeRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
+	if err := f.errs[query]; err != nil {
+		return 0, err
 	}
 
-	target, ok := dest[0].(*int64)
-	if !ok {
-		return errors.New("в двойнике счётчиков принимается только *int64")
-	}
-
-	*target = r.value
-
-	return nil
+	return f.values[query], nil
 }
 
 // countingStats — читатель, считающий обращения, для проверки порядка «гейт раньше базы».
@@ -61,10 +44,10 @@ type countingStats struct {
 	queries int
 }
 
-func (c *countingStats) row(context.Context, string) statsRow {
+func (c *countingStats) read(context.Context, string) (int64, error) {
 	c.queries++
 
-	return statsFakeRow{value: 1}
+	return 1, nil
 }
 
 // countsRequest — GET эндпоинта статистики.
@@ -76,7 +59,7 @@ func TestShorterStatsCounts(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{statsURLsQuery: 3, statsUsersQuery: 2}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader).ServeHTTP(rec, countsRequest())
+	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ожидали 200", rec.Code)
@@ -111,7 +94,7 @@ func TestShorterStatsEmptyStorage(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader).ServeHTTP(rec, countsRequest())
+	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ожидали 200", rec.Code)
@@ -127,7 +110,7 @@ func TestShorterStatsShape(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{statsURLsQuery: 12, statsUsersQuery: 7}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader).ServeHTTP(rec, countsRequest())
+	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
 
 	var fields map[string]json.RawMessage
 
@@ -208,23 +191,23 @@ func TestShorterStatsSourceErrors(t *testing.T) {
 	}{
 		{
 			name: "счётчик сокращений недоступен",
-			reader: &statsFake{
+			reader: (&statsFake{
 				values: map[string]int64{statsUsersQuery: 2},
 				errs:   map[string]error{statsURLsQuery: errors.New("pq: отношение не найдено")},
-			},
+			}).read,
 		},
 		{
 			name: "счётчик пользователей недоступен",
-			reader: &statsFake{
+			reader: (&statsFake{
 				values: map[string]int64{statsURLsQuery: 3},
 				errs:   map[string]error{statsUsersQuery: errors.New("pq: отношение не найдено")},
-			},
+			}).read,
 		},
 		{
 			name: "срок ожидания истёк",
-			reader: &statsFake{
+			reader: (&statsFake{
 				errs: map[string]error{statsURLsQuery: context.DeadlineExceeded, statsUsersQuery: context.DeadlineExceeded},
-			},
+			}).read,
 		},
 	}
 
@@ -278,7 +261,7 @@ func TestShorterStatsTimeoutBounds(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader).ServeHTTP(rec, countsRequest())
+	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
 
 	if len(deadlines) != 2 {
 		t.Fatalf("сроков задано %d, ожидали два", len(deadlines))
@@ -302,7 +285,7 @@ func TestShorterStatsTimeoutBounds(t *testing.T) {
 	start := time.Now()
 
 	rec = httptest.NewRecorder()
-	ShorterStats(blocked).ServeHTTP(rec, req)
+	ShorterStats(blocked.read).ServeHTTP(rec, req)
 
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("ответ через %v, ожидали немедленный после отмены", elapsed)
@@ -321,25 +304,21 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 	tests := []struct {
 		name       string
 		prefix     netip.Prefix
-		reader     StatsReader
 		remoteAddr string
 		realIP     []string
 	}{
 		{
 			name:       "настройка не задана",
-			reader:     &statsFake{values: map[string]int64{}},
 			remoteAddr: "10.9.9.9:45678",
 		},
 		{
 			name:       "адрес вне подсети",
 			prefix:     prefix,
-			reader:     &statsFake{values: map[string]int64{}},
 			remoteAddr: "192.0.2.1:45678",
 		},
 		{
 			name:       "адрес вне подсети, заголовок из подсети",
 			prefix:     prefix,
-			reader:     &statsFake{values: map[string]int64{}},
 			remoteAddr: "192.0.2.1:45678",
 			realIP:     []string{"8.8.8.8"},
 		},
@@ -351,7 +330,6 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 		{
 			name:       "адрес не разобран",
 			prefix:     prefix,
-			reader:     &statsFake{values: map[string]int64{}},
 			remoteAddr: "unknown",
 		},
 	}
@@ -360,12 +338,7 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			counter := &countingStats{}
 
-			reader := tt.reader
-			if reader == nil {
-				reader = counter
-			}
-
-			handler := TrustedSubnetGate(tt.prefix)(ShorterStats(reader))
+			handler := TrustedSubnetGate(tt.prefix)(ShorterStats(counter.read))
 
 			req := countsRequest()
 			req.RemoteAddr = tt.remoteAddr
@@ -390,7 +363,7 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 	// Контроль самого двойника: разрешённый запрос к счётчикам всё-таки доходит.
 	counter := &countingStats{}
 
-	handler := TrustedSubnetGate(prefix)(ShorterStats(counter))
+	handler := TrustedSubnetGate(prefix)(ShorterStats(counter.read))
 
 	req := countsRequest()
 	req.RemoteAddr = "10.9.9.9:45678"
