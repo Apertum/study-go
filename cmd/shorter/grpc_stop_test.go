@@ -57,7 +57,10 @@ func startHangServer(t *testing.T, store *hangStore) hangServer {
 	t.Helper()
 
 	listener := bufconn.Listen(1024 * 64)
-	server := grpc.NewServer(grpc.ChainUnaryInterceptor(grpcapi.UnaryRecover()))
+	server := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		grpcapi.UnaryRecover(),
+		grpcapi.Auth("key", nil),
+	))
 	shortenerv1.RegisterShortenerServiceServer(server, grpcapi.New(&shorten.Service{Store: store}, nil, "key"))
 
 	go func() { _ = server.Serve(listener) }()

@@ -98,7 +98,7 @@ func (s *Service) Shorten(usrID int, url string) (Result, error) {
 func (s *Service) Expand(id string) (string, error) {
 	longURL, deleted, err := s.Store.Get(id)
 	if err != nil {
-		return "", fmt.Errorf("%w: чтение ссылки: %w", ErrNotFound, err)
+		return "", fmt.Errorf("%w: чтение ссылки: %w", ErrStorage, err)
 	}
 
 	if longURL == "" {

@@ -45,7 +45,7 @@ func TestShorterStatsCountsAgainstDatabase(t *testing.T) {
 		t.Skipf("PostgreSQL недоступен: %v", pingErr)
 	}
 
-	statsHandler := ShorterStats(StatsFromDB(db))
+	statsHandler := ShorterStats(StatsFromDBWithTX(db))
 
 	base := readCounts(t, statsHandler)
 

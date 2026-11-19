@@ -480,3 +480,26 @@ func TestShorterUserURLsGet_AuthMiddleware_UserNotFound(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
+
+// TestShorterPost_StorageError отвечает 500 при ошибке хранилища: при недоступности базы или
+// невозможности записать файл клиент не должен получать 409 Conflict (который интерпретируется
+// как дублирование URL).
+func TestShorterPost_StorageError(t *testing.T) {
+	s := storage.New("/no/such/directory_xyz/storage.json")
+
+	r := chi.NewRouter()
+	r.Use(middleware.GzipMiddleware)
+	r.Use(testAuthMiddleware)
+	r.Post("/", ShorterPost(s, nil))
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	jsonBody := `{"url":"https://example.com/storage-error-test"}`
+	resp, err := http.Post(srv.URL+"/", "application/json", strings.NewReader(jsonBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Хранение не доступно — должен быть 500 Internal Server Error, а не 409 Conflict.
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}

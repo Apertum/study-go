@@ -36,14 +36,22 @@ func New(service *shorten.Service, users authn.UserStore, key string) *Shortener
 	return &ShortenerService{service: service, users: users, key: key}
 }
 
+// getID извлекает идентификатор пользователя из контекста, установленного перехватчиком Auth.
+// Возвращает (0, false) если ключ отсутствует — значит вызов без авторизации или перехватчик не зарегистрирован.
+func getID(ctx context.Context) (int, bool) {
+	id, ok := ctx.Value(contextKeyUserID{}).(int)
+
+	return id, ok
+}
+
 // ShortenURL сокращает ссылку — аналог POST /api/shorten.
 //
 // Результат — полный короткий URL. Повторное сокращение того же оригинала даёт ALREADY_EXISTS
 // с существующей короткой ссылкой в сообщении (HTTP-аналог отвечает 409 с тем же значением).
 func (s *ShortenerService) ShortenURL(ctx context.Context, req *shortenerv1.URLShortenRequest) (*shortenerv1.URLShortenResponse, error) {
-	usrID, err := s.authenticate(ctx)
-	if err != nil {
-		return nil, err
+	usrID, ok := getID(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, msgUnauthenticated)
 	}
 
 	// Проверка здесь, а не в shorten.Service: HTTP пустой оригинал сохраняет, и отклонять
@@ -80,9 +88,9 @@ func (s *ShortenerService) ExpandURL(_ context.Context, req *shortenerv1.URLExpa
 // ListUserURLs выдаёт ссылки аутентифицированного пользователя — аналог GET /api/user/urls.
 // Пустой список — OK без элементов: в контракте нет носителя состояния 204.
 func (s *ShortenerService) ListUserURLs(ctx context.Context, _ *emptypb.Empty) (*shortenerv1.UserURLsResponse, error) {
-	usrID, err := s.authenticate(ctx)
-	if err != nil {
-		return nil, err
+	usrID, ok := getID(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, msgUnauthenticated)
 	}
 
 	urls, err := s.service.UserURLs(ctx, usrID)
@@ -96,23 +104,6 @@ func (s *ShortenerService) ListUserURLs(ctx context.Context, _ *emptypb.Empty) (
 	}
 
 	return &shortenerv1.UserURLsResponse{Url: data}, nil
-}
-
-// authenticate проверяет учётные данные из metadata и возвращает идентификатор пользователя.
-// Проверка внутри методов, а не в перехватчике с белым списком: новый публичный метод не
-// может остаться без защиты против воли, а ExpandURL этой ветки не имеет.
-func (s *ShortenerService) authenticate(ctx context.Context) (int, error) {
-	raw, ok := credential(ctx)
-	if !ok {
-		return 0, status.Error(codes.Unauthenticated, msgUnauthenticated)
-	}
-
-	usrID, err := authn.Verify(ctx, raw, s.key, s.users)
-	if err != nil {
-		return 0, fail("авторизация", err)
-	}
-
-	return usrID, nil
 }
 
 // credential достаёт учётные данные из metadata. Их должно быть ровно одно значение:

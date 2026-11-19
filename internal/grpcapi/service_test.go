@@ -177,7 +177,10 @@ func startServer(t *testing.T, svc *shorten.Service, users authn.UserStore) shor
 	t.Helper()
 
 	listener := bufconn.Listen(1024 * 64)
-	server := grpc.NewServer(grpc.ChainUnaryInterceptor(UnaryRecover()))
+	server := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		UnaryRecover(),
+		Auth(testKey, users),
+	))
 	shortenerv1.RegisterShortenerServiceServer(server, New(svc, users, testKey))
 
 	go func() { _ = server.Serve(listener) }()
@@ -307,7 +310,7 @@ func TestExpandURL(t *testing.T) {
 		},
 		{name: "ссылки нет", store: &fakeStore{}, id: "ffffffff", wantCode: codes.NotFound},
 		{name: "ссылка удалена", store: &fakeStore{originalURL: "https://example.com/a", deleted: true}, id: "a1b2c3d4", wantCode: codes.FailedPrecondition},
-		{name: "ошибка хранилища", store: &fakeStore{getErr: errors.New("оборвалось")}, id: "a1b2c3d4", wantCode: codes.NotFound},
+		{name: "ошибка хранилища", store: &fakeStore{getErr: errors.New("оборвалось")}, id: "a1b2c3d4", wantCode: codes.Internal},
 		{name: "пустой id", store: &fakeStore{}, id: "", wantCode: codes.InvalidArgument},
 	}
 

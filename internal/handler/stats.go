@@ -26,14 +26,43 @@ const (
 // errNoStatsSource — источник счётчиков не задан; причиной отвечает 503, а не паникой.
 var errNoStatsSource = errors.New("источник счётчиков не задан")
 
-// StatsReader — источник счётчиков для GET /api/internal/stats. Зависимость намеренно уже, чем
-// весь слой хранения: счётчики идут напрямую в базу, потому что у файтового хранилища нет ни
-// таблицы пользователей, ни признака удаления. Одна функция вместо интерфейса: единственное
-// действие источника — выполнить запрос и вернуть число; *sql.Row со значением не построить,
-// поэтому готовое int64 избавляет двойников тестов от прослойки для строки.
+// StatsTX — источник счётчиков для GET /api/internal/stats. Метод Exec читает оба
+// счётчика последовательно в рамках одной транзакции: значения берутся из одного снимка
+// и гарантированно согласованы между собой.
+type StatsTX interface {
+	Exec(ctx context.Context) (urls, users int64, err error)
+}
+
+// StatsReader — источник одного счётчика. Обёрнутый через StatsReaderAdapter, преобразуется
+// в StatsTX: Exec вызывет Reader дважды по одному запросу. Для источников на основе sql.DB
+// предпочтительнее использовать StatsFromDBWithTX, чтобы оба запроса шли в одной транзакции.
 type StatsReader func(ctx context.Context, query string) (int64, error)
 
-// StatsFromDB возвращает читателя счётчиков для соединения с базой.
+// StatsReaderAdapter оборачивает StatsReader в StatsTX: Exec вызывает Reader дважды
+// по одному запросу в отдельной транзакции, которая ограничивается временем ожидания.
+type StatsReaderAdapter struct {
+	Reader StatsReader
+}
+
+// Exec обёрнутого StatsReader читает оба счётчика по отдельности и применяет timeout.
+func (a *StatsReaderAdapter) Exec(ctx context.Context) (urls, users int64, err error) {
+	ctx, cancel := context.WithTimeout(ctx, statsQueryTimeout)
+	defer cancel()
+
+	urls, err = a.Reader(ctx, statsURLsQuery)
+	if err != nil {
+		return 0, 0, fmt.Errorf("число сокращений: %w", err)
+	}
+
+	users, err = a.Reader(ctx, statsUsersQuery)
+	if err != nil {
+		return 0, 0, fmt.Errorf("число пользователей: %w", err)
+	}
+
+	return urls, users, nil
+}
+
+// StatsFromDB возвращает источник одного счётчика для соединения с базой.
 //
 // Нулевое соединение отдаёт как nil, а не как обёртку над ним: у функции nil и есть nil,
 // поэтому проверка нулевого источника в loadStats не обманывается указателем внутри интерфейса.
@@ -52,6 +81,48 @@ func StatsFromDB(db *sql.DB) StatsReader {
 	}
 }
 
+// StatsFromDBWithTX создаёт источник счётчиков в виде единой транзакции. Оба запроса выполняются
+// внутри READ COMMITTED-транзакции с отдельным соединением из пула, поэтому снимок
+// гарантирует согласованность счётчиков между таблицами usr и url_srv.
+func StatsFromDBWithTX(db *sql.DB) StatsTX {
+	if db == nil {
+		return nil
+	}
+
+	return statsTX{db: db}
+}
+
+type statsTX struct{ db *sql.DB }
+
+// Exec открывает транзакцию READ COMMITTED, читает оба счётчика и фиксирует транзакцию.
+func (tx statsTX) Exec(ctx context.Context) (urls, users int64, err error) {
+	txn, err := tx.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return 0, 0, err
+	}
+
+	defer func() {
+		if err != nil {
+			_ = txn.Rollback()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(ctx, statsQueryTimeout)
+	defer cancel()
+
+	err = txn.QueryRowContext(ctx, statsURLsQuery).Scan(&urls)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	err = txn.QueryRowContext(ctx, statsUsersQuery).Scan(&users)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return urls, users, txn.Commit()
+}
+
 // statsResponse — тело ответа эндпоинта: ровно два числовых поля в указанном порядке.
 type statsResponse struct {
 	URLs  int64 `json:"urls"`
@@ -68,9 +139,9 @@ type statsResponse struct {
 // 200 — оба запроса выполнены, 0 — корректное значение пустой базы. 503 — источник не задан,
 // запрос или разбор значения не удались либо срок ожидания истёк; тело в этом случае пустое,
 // чтобы эндпоинт не стал способом проверить содержимое базы или её доступность.
-func ShorterStats(reader StatsReader) http.HandlerFunc {
+func ShorterStats(tx StatsTX) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		stats, err := loadStats(r.Context(), reader)
+		stats, err := loadStats(r.Context(), tx)
 		if err != nil {
 			logrus.WithError(err).Warn("статистика недоступна")
 
@@ -87,25 +158,13 @@ func ShorterStats(reader StatsReader) http.HandlerFunc {
 	}
 }
 
-// loadStats читает оба счётчика одним сроком ожидания на пару. Кодировка ответа — дело
-// обработчика, поэтому ошибка записи соединения сюда не доходит.
-func loadStats(ctx context.Context, reader StatsReader) (statsResponse, error) {
-	if reader == nil {
+// loadStats читает оба счётчика одним вызовом источника; ошибка записи соединения сюда не доходит.
+func loadStats(ctx context.Context, tx StatsTX) (statsResponse, error) {
+	if tx == nil {
 		return statsResponse{}, errNoStatsSource
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, statsQueryTimeout)
-	defer cancel()
+	urls, users, err := tx.Exec(ctx)
 
-	urls, err := reader(ctx, statsURLsQuery)
-	if err != nil {
-		return statsResponse{}, fmt.Errorf("число сокращений: %w", err)
-	}
-
-	users, err := reader(ctx, statsUsersQuery)
-	if err != nil {
-		return statsResponse{}, fmt.Errorf("число пользователей: %w", err)
-	}
-
-	return statsResponse{URLs: urls, Users: users}, nil
+	return statsResponse{URLs: urls, Users: users}, err
 }

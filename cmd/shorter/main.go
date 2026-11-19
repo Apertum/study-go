@@ -134,11 +134,11 @@ func main() {
 	// Внутренние эндпоинты — подсетевой контроль вместо куки: TrustedSubnetGate отвечает 403
 	// раньше обработчика, поэтому отказ по сети не выдаёт состояние базы. Пустая настройка
 	// разобрана в ParseFlags как нулевой префикс, и тогда доступ закрыт для всех.
-	statsReader := handler.StatsFromDB(db)
+	statsTX := handler.StatsFromDBWithTX(db)
 
 	r.Route("/api/internal", func(r chi.Router) {
 		r.Use(handler.TrustedSubnetGate(config.TrustedSubnet))
-		r.Get("/stats", handler.ShorterStats(statsReader))
+		r.Get("/stats", handler.ShorterStats(statsTX))
 	})
 
 	logrus.Debug("Запуск сервера на ", config.Addr)
@@ -148,7 +148,10 @@ func main() {
 	// транспорт, тот же смысл. Учётные данные — metadata authorization того же формата, что
 	// значение куки user_id, и проверяет их тот же authn.Verify. TLS не используется: открытый
 	// текст независимо от EnableHTTPS (решение владельца, openspec add-grpc-api).
-	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(grpcapi.UnaryRecover()))
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		grpcapi.UnaryRecover(),
+		grpcapi.Auth(config.CookieKey, authn.PostgresUsers{DB: db}),
+	))
 	shortenerv1.RegisterShortenerServiceServer(grpcServer, grpcapi.New(
 		&shorten.Service{
 			Store:   store,

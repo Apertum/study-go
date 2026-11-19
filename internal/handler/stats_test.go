@@ -59,7 +59,7 @@ func TestShorterStatsCounts(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{statsURLsQuery: 3, statsUsersQuery: 2}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
+	ShorterStats(&StatsReaderAdapter{Reader: reader.read}).ServeHTTP(rec, countsRequest())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ожидали 200", rec.Code)
@@ -94,7 +94,7 @@ func TestShorterStatsEmptyStorage(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
+	ShorterStats(&StatsReaderAdapter{Reader: reader.read}).ServeHTTP(rec, countsRequest())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ожидали 200", rec.Code)
@@ -110,7 +110,7 @@ func TestShorterStatsShape(t *testing.T) {
 	reader := &statsFake{values: map[string]int64{statsURLsQuery: 12, statsUsersQuery: 7}}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
+	ShorterStats(&StatsReaderAdapter{Reader: reader.read}).ServeHTTP(rec, countsRequest())
 
 	var fields map[string]json.RawMessage
 
@@ -139,18 +139,18 @@ func TestShorterStatsShape(t *testing.T) {
 // режиме, а нулевой интерфейс не должен привести к обращению к полям отсутствующего пула соединений.
 func TestShorterStatsWithoutSource(t *testing.T) {
 	tests := []struct {
-		reader StatsReader
-		name   string
+		tx   StatsTX
+		name string
 	}{
 		{name: "источник не задан"},
-		{name: "соединение с базой отсутствует", reader: StatsFromDB(nil)},
+		{name: "соединение с базой отсутствует", tx: (StatsTX)(nil)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 
-			ShorterStats(tt.reader).ServeHTTP(rec, countsRequest())
+			ShorterStats(tt.tx).ServeHTTP(rec, countsRequest())
 
 			if rec.Code != http.StatusServiceUnavailable {
 				t.Errorf("код %d, ожидали 503", rec.Code)
@@ -186,28 +186,28 @@ func TestShorterStatsWithoutSource(t *testing.T) {
 // истечение срока ожидания дают отказ без счётчиков.
 func TestShorterStatsSourceErrors(t *testing.T) {
 	tests := []struct {
-		reader StatsReader
-		name   string
+		tx   StatsTX
+		name string
 	}{
 		{
 			name: "счётчик сокращений недоступен",
-			reader: (&statsFake{
+			tx: &StatsReaderAdapter{Reader: (&statsFake{
 				values: map[string]int64{statsUsersQuery: 2},
 				errs:   map[string]error{statsURLsQuery: errors.New("pq: отношение не найдено")},
-			}).read,
+			}).read},
 		},
 		{
 			name: "счётчик пользователей недоступен",
-			reader: (&statsFake{
+			tx: &StatsReaderAdapter{Reader: (&statsFake{
 				values: map[string]int64{statsURLsQuery: 3},
 				errs:   map[string]error{statsUsersQuery: errors.New("pq: отношение не найдено")},
-			}).read,
+			}).read},
 		},
 		{
 			name: "срок ожидания истёк",
-			reader: (&statsFake{
+			tx: &StatsReaderAdapter{Reader: (&statsFake{
 				errs: map[string]error{statsURLsQuery: context.DeadlineExceeded, statsUsersQuery: context.DeadlineExceeded},
-			}).read,
+			}).read},
 		},
 	}
 
@@ -224,7 +224,7 @@ func TestShorterStatsSourceErrors(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 
-			ShorterStats(tt.reader).ServeHTTP(rec, countsRequest())
+			ShorterStats(tt.tx).ServeHTTP(rec, countsRequest())
 
 			if rec.Code != http.StatusServiceUnavailable {
 				t.Errorf("код %d, ожидали 503", rec.Code)
@@ -261,7 +261,7 @@ func TestShorterStatsTimeoutBounds(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	ShorterStats(reader.read).ServeHTTP(rec, countsRequest())
+	ShorterStats(&StatsReaderAdapter{Reader: reader.read}).ServeHTTP(rec, countsRequest())
 
 	if len(deadlines) != 2 {
 		t.Fatalf("сроков задано %d, ожидали два", len(deadlines))
@@ -285,7 +285,7 @@ func TestShorterStatsTimeoutBounds(t *testing.T) {
 	start := time.Now()
 
 	rec = httptest.NewRecorder()
-	ShorterStats(blocked.read).ServeHTTP(rec, req)
+	ShorterStats(&StatsReaderAdapter{Reader: blocked.read}).ServeHTTP(rec, req)
 
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("ответ через %v, ожидали немедленный после отмены", elapsed)
@@ -338,7 +338,7 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			counter := &countingStats{}
 
-			handler := TrustedSubnetGate(tt.prefix)(ShorterStats(counter.read))
+			handler := TrustedSubnetGate(tt.prefix)(ShorterStats(&StatsReaderAdapter{Reader: counter.read}))
 
 			req := countsRequest()
 			req.RemoteAddr = tt.remoteAddr
@@ -363,7 +363,7 @@ func TestTrustedSubnetGateRunsBeforeStorage(t *testing.T) {
 	// Контроль самого двойника: разрешённый запрос к счётчикам всё-таки доходит.
 	counter := &countingStats{}
 
-	handler := TrustedSubnetGate(prefix)(ShorterStats(counter.read))
+	handler := TrustedSubnetGate(prefix)(ShorterStats(&StatsReaderAdapter{Reader: counter.read}))
 
 	req := countsRequest()
 	req.RemoteAddr = "10.9.9.9:45678"

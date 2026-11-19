@@ -176,7 +176,7 @@ func TestExpand(t *testing.T) {
 		},
 		{name: "нет записи", store: &fakeStore{}, wantError: ErrNotFound},
 		{name: "запись удалена", store: &fakeStore{originalURL: "https://a", deleted: true}, wantError: ErrGone},
-		{name: "ошибка хранилища", store: &fakeStore{getErr: errors.New("оборвалось")}, wantError: ErrNotFound},
+		{name: "ошибка хранилища", store: &fakeStore{getErr: errors.New("оборвалось")}, wantError: ErrStorage},
 	}
 
 	for _, tt := range tests {

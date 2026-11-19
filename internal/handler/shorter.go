@@ -128,6 +128,17 @@ func ShorterPost(s *storage.Storage, central *audit.Central) http.HandlerFunc {
 				})
 				return
 			}
+
+			/*
+			   - DuplicateError -> 409 Conflict (URL уже сокращён)
+			   - ErrStorage -> 500 Internal Server Error (база недоступна или файл не записался)
+			*/
+			if errors.Is(err, shorten.ErrStorage) {
+				logrus.WithError(err).Error("ShortenPost DB error")
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+
 			http.Error(w, "Failed to save", http.StatusConflict)
 			return
 		}

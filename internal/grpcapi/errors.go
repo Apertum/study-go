@@ -49,6 +49,8 @@ func toStatus(err error) *status.Status {
 		return status.New(codes.NotFound, msgNotFound)
 	case errors.Is(err, shorten.ErrGone):
 		return status.New(codes.FailedPrecondition, msgGone)
+	case errors.Is(err, shorten.ErrStorage):
+		return status.New(codes.Internal, msgInternal)
 	case errors.As(err, &dup):
 		// Существующая короткая ссылка — единственный случай, когда сообщение несёт
 		// данные: контракт отвечает ALREADY_EXISTS без поля результата.
