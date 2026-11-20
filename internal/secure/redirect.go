@@ -39,19 +39,55 @@ func RedirectHandler(tlsAddr string) http.Handler {
 
 // AddrConflict возвращает ошибку, если адрес редиректа занял бы тот же адрес, что основной
 // сервер: один из хостов не указан либо хосты равны при совпадающем порту.
+//
+// Текст ошибки сохранён с момента появления проверки: по нему различают, какой способ задания
+// править.
 func AddrConflict(mainAddr, redirectAddr string) error {
-	mainHost, mainPort := splitHostPort(mainAddr)
-	redirectHost, redirectPort := splitHostPort(redirectAddr)
-
-	if mainPort != redirectPort {
-		return nil
-	}
-
-	if mainHost != "" && redirectHost != "" && mainHost != redirectHost {
+	if !sameListenAddr(mainAddr, redirectAddr) {
 		return nil
 	}
 
 	return fmt.Errorf("адрес редиректа %s совпадает с основным адресом %s: оба слушателя не поместятся", redirectAddr, mainAddr)
+}
+
+// ListenAddr — адрес слушателя вместе с ролью и способами задания настройки: сообщение о
+// конфликте обязано называть оба адреса так, чтобы было понятно, какую настройку править.
+type ListenAddr struct {
+	// Role описывает слушателя в сообщении — «адрес gRPC-слушателя».
+	Role string
+	// Setting перечисляет способы задания — «-grpc-addr/GRPC_ADDRESS/grpc_address».
+	Setting string
+	// Addr — итоговый адрес слушателя.
+	Addr string
+}
+
+// AddrConflictAll проверяет произвольный набор адресов слушателей одного процесса — HTTP,
+// редирект, gRPC. Ошибкой считается любая пара, которая встанет на один порт: пустой хост
+// означает «все интерфейсы», поэтому он пересекается с любым явно указанным хостом.
+func AddrConflictAll(addrs ...ListenAddr) error {
+	for i := range addrs {
+		for j := i + 1; j < len(addrs); j++ {
+			if sameListenAddr(addrs[i].Addr, addrs[j].Addr) {
+				return fmt.Errorf("%s (%s) %s совпадает с %s (%s) %s: оба слушателя не поместятся",
+					addrs[i].Role, addrs[i].Setting, addrs[i].Addr,
+					addrs[j].Role, addrs[j].Setting, addrs[j].Addr)
+			}
+		}
+	}
+
+	return nil
+}
+
+// sameListenAddr говорит, что два адреса не поместятся одновременно.
+func sameListenAddr(first, second string) bool {
+	firstHost, firstPort := splitHostPort(first)
+	secondHost, secondPort := splitHostPort(second)
+
+	if firstPort != secondPort {
+		return false
+	}
+
+	return firstHost == "" || secondHost == "" || firstHost == secondHost
 }
 
 // splitHostPort разбирает адрес слушателя; без порта возвращается пустой порт и весь адрес как хост.

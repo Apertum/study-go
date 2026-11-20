@@ -30,6 +30,7 @@ import (
 var configEnvNames = []string{
 	"SERVER_ADDRESS", "BASE_URL", "FILE_STORAGE_PATH", "DATABASE_DSN", "COOKIE_KEY",
 	"AUDIT_FILE", "AUDIT_URL", "ENABLE_HTTPS", "CERT_FILE", "KEY_FILE", "HTTP_SERVER_ADDRESS", "CONFIG",
+	"TRUSTED_SUBNET", "GRPC_ADDRESS",
 }
 
 // errSignalsUnsupported — признак того, что платформа не умеет доставлять сигналы чужому
@@ -115,15 +116,29 @@ func shorterEnv(values []string) []string {
 	return append(env, values...)
 }
 
-// startShorter запускает сервер в указанном каталоге с указанными переменными.
-func startShorter(t *testing.T, bin, dir string, env []string) *shorterProcess {
+// grpcAddrEnv добавляет процессу собственный адрес gRPC, если тест его не задал: несколько
+// процессов одного прогона не должны спорить за значение по умолчанию :8082.
+func grpcAddrEnv(t *testing.T, env []string) []string {
+	t.Helper()
+
+	for _, item := range env {
+		if strings.HasPrefix(item, "GRPC_ADDRESS=") {
+			return env
+		}
+	}
+
+	return append(env, "GRPC_ADDRESS="+freeAddr(t))
+}
+
+// startShorter запускает сервер в указанном каталоге с указанными переменными и аргументами.
+func startShorter(t *testing.T, bin, dir string, env []string, args ...string) *shorterProcess {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(ctx, bin)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	cmd.Env = shorterEnv(env)
+	cmd.Env = shorterEnv(grpcAddrEnv(t, env))
 
 	output := &lockedBuf{}
 	cmd.Stdout = output

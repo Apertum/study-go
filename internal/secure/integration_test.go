@@ -132,6 +132,15 @@ func startServer(t *testing.T, bin, dir string, env map[string]string) *serverPr
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 
+	// gRPC-слушатель получает собственный адрес: процессы одного прогона не должны спорить за
+	// значение по умолчанию :8082, а проверкам TLS и редиректа адрес gRPC безразличен.
+	grpcAddr, ok := env["GRPC_ADDRESS"]
+	if !ok {
+		grpcAddr = freeAddr(t)
+	}
+
+	cmd.Env = append(cmd.Env, "GRPC_ADDRESS="+grpcAddr)
+
 	stderr := &lockedBuffer{}
 	cmd.Stderr = stderr
 

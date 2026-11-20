@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os/signal"
@@ -13,11 +14,16 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+	shortenerv1 "study-go.ru/cho/eto/api/shortener/v1"
 	"study-go.ru/cho/eto/internal/audit"
+	"study-go.ru/cho/eto/internal/authn"
 	config "study-go.ru/cho/eto/internal/config"
+	"study-go.ru/cho/eto/internal/grpcapi"
 	"study-go.ru/cho/eto/internal/handler"
 	internalMiddleware "study-go.ru/cho/eto/internal/middleware"
 	"study-go.ru/cho/eto/internal/secure"
+	"study-go.ru/cho/eto/internal/shorten"
 	"study-go.ru/cho/eto/internal/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -39,7 +45,8 @@ func init() {
 
 func main() {
 	// Конфигурация обязана быть итоговой до первой строки, которая читает настройки.
-	// Неразбираемое ENABLE_HTTPS завершает процесс здесь — до хранилища, файла аудита и базы.
+	// Неразбираемое ENABLE_HTTPS или trusted_subnet завершают процесс здесь — до хранилища,
+	// файла аудита и базы.
 	if err := config.ParseFlags(); err != nil {
 		logrus.Fatal(err)
 	}
@@ -124,8 +131,35 @@ func main() {
 	r.Handle("/debug/pprof/*", authMiddleware(handler.PprofHandler(store, central)))
 	r.Get("/debug/pprof/", authMiddleware(handler.PprofHandler(store, central)).ServeHTTP)
 
+	// Внутренние эндпоинты — подсетевой контроль вместо куки: TrustedSubnetGate отвечает 403
+	// раньше обработчика, поэтому отказ по сети не выдаёт состояние базы. Пустая настройка
+	// разобрана в ParseFlags как нулевой префикс, и тогда доступ закрыт для всех.
+	statsTX := handler.StatsFromDBWithTX(db)
+
+	r.Route("/api/internal", func(r chi.Router) {
+		r.Use(handler.TrustedSubnetGate(config.TrustedSubnet))
+		r.Get("/stats", handler.ShorterStats(statsTX))
+	})
+
 	logrus.Debug("Запуск сервера на ", config.Addr)
 	logrus.Debug("Base url: ", config.BaseURL)
+
+	// gRPC-слушатель поднимает те же операции поверх shorten.Service: другие методы, другой
+	// транспорт, тот же смысл. Учётные данные — metadata authorization того же формата, что
+	// значение куки user_id, и проверяет их тот же authn.Verify. TLS не используется: открытый
+	// текст независимо от EnableHTTPS (решение владельца, openspec add-grpc-api).
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		grpcapi.UnaryRecover(),
+		grpcapi.Auth(config.CookieKey, authn.PostgresUsers{DB: db}),
+	))
+	shortenerv1.RegisterShortenerServiceServer(grpcServer, grpcapi.New(
+		&shorten.Service{
+			Store:   store,
+			URLs:    shorten.PostgresUserURLReader{DB: db},
+			Audit:   central,
+			BaseURL: config.BaseURL,
+		},
+	))
 
 	plan := stopPlan{
 		deletes:        &deletes,
@@ -133,6 +167,7 @@ func main() {
 		closers:        closers,
 		timeout:        shutdownTimeout,
 		releaseDeletes: releaseLifecycle,
+		grpcServer:     grpcServer,
 	}
 
 	// Ошибка сюда приходит либо от слушателя (например занятый адрес), либо от оборванной
@@ -155,6 +190,11 @@ type stopPlan struct {
 	// Может быть nil — тогда горутине удаления ограничивает срок только ожидание wg.
 	releaseDeletes context.CancelFunc
 
+	// grpcServer — участник запуска целиком: serve поднимает на нём слушатель, shutdown его
+	// отпускает. nil означает «gRPC в этом запуске не участвует» — так работают тесты serve,
+	// которым нужен только HTTP.
+	grpcServer *grpc.Server
+
 	closers []io.Closer
 	timeout time.Duration
 }
@@ -162,9 +202,10 @@ type stopPlan struct {
 // listener поднимает один слушатель и возвращает причину его остановки.
 type listener func() error
 
-// serve слушает настроенный адрес: по HTTPS с редиректом с HTTP либо по обычному HTTP.
+// serve слушает настроенный адрес: по HTTPS с редиректом с HTTP либо по обычному HTTP, и всегда
+// добавляет gRPC-слушатель, если план запуска принёс gRPC-сервер.
 //
-// Режимов запуска два.
+// Режимов два, и отличаются они только составом HTTP-слушателей.
 //
 //	HTTPS выключен (нет -s, переменная ENABLE_HTTPS пуста и в файле нет enable_https) —
 //	один слушатель на config.Addr (по умолчанию :8080), открытым текстом, сертификаты не создаются.
@@ -173,10 +214,17 @@ type listener func() error
 //	config.Addr (:8080) и редиректор на config.HTTPRedirectAddr (:8081), который
 //	отвечает 301 на https:// с тем же путём и query.
 //
+// gRPC-сервер занимает config.GRPCAddr (:8082) и работает по открытому тексту в обоих режимах:
+// включённый HTTPS его не касается.
+//
 // Ошибки выпуска материалов возвращаются до прослушивания портов, чтобы неверная
 // конфигурация не выглядела как рабочий сервер. Возврат из serve означает «остановка
-// выполнена»: по отмене ctx отпускаются оба адреса и выполняются фазы плана.
+// выполнена»: по отмене ctx отпускаются все адреса и выполняются фазы плана.
 func serve(ctx context.Context, handler http.Handler, plan stopPlan) error {
+	if err := listenConflicts(); err != nil {
+		return err
+	}
+
 	// Основной сервер занимает -a / SERVER_ADDRESS. TLSConfig пока пустая — при
 	// включённом HTTPS сертификат подставится ниже.
 	server := &http.Server{
@@ -185,49 +233,113 @@ func serve(ctx context.Context, handler http.Handler, plan stopPlan) error {
 		ReadHeaderTimeout: listenTimeout,
 	}
 
-	// Ветвь «как раньше»: единственный порт и обычный HTTP.
-	if !config.EnableHTTPS {
-		logrus.Info("Запуск HTTP-сервера на ", config.Addr)
+	servers := []*http.Server{server}
+	listeners := []listener{server.ListenAndServe}
 
-		return waitStop(ctx, []*http.Server{server}, []listener{server.ListenAndServe}, plan)
+	// Ветвь «как раньше»: единственный порт и обычный HTTP.
+	if config.EnableHTTPS {
+		// Материал TLS берётся из -cert-file/-key-file (cert.pem/key.pem): готовая пара
+		// переиспользуется байт в байт, битая или истёкшая перевыпускается на месте.
+		material, err := secure.LoadOrGenerate(config.CertFile, config.KeyFile)
+		if err != nil {
+			return fmt.Errorf("материалы TLS не готовы: %w", err)
+		}
+
+		// Сертификат кладём прямо в конфигурацию сервера: пути файлов в ListenAndServeTLS
+		// ниже не передаются.
+		server.TLSConfig = material.ServerTLS()
+
+		// Второй слушатель ничего не обслуживает сам — только редирект на основной адрес.
+		redirect := &http.Server{
+			Addr:              config.HTTPRedirectAddr,
+			Handler:           secure.RedirectHandler(config.Addr),
+			ReadHeaderTimeout: listenTimeout,
+		}
+
+		logrus.Info("Запуск HTTPS-сервера на ", config.Addr)
+		logrus.Info("Запуск HTTP-редиректора на ", config.HTTPRedirectAddr)
+
+		// Редирект останавливается раньше основного сервера, поэтому он первым и в списке
+		// слушателей, и в списке запуска.
+		servers = []*http.Server{redirect, server}
+		listeners = []listener{redirect.ListenAndServe, func() error { return server.ListenAndServeTLS("", "") }}
+	} else {
+		logrus.Info("Запуск HTTP-сервера на ", config.Addr)
 	}
 
-	// Дальше только HTTPS. Адреса сверяются до bind: иначе второй слушатель падал бы с
-	// невнятным «bind: address already in use» уже внутри горутины.
-	err := secure.AddrConflict(config.Addr, config.HTTPRedirectAddr)
-	if err != nil {
+	if grpcListen := grpcListener(plan); grpcListen != nil {
+		listeners = append(listeners, grpcListen)
+	}
+
+	return waitStop(ctx, servers, listeners, plan)
+}
+
+// listenConflicts сверяет адреса слушателей до bind: иначе второй слушатель падал бы с
+// невнятным «bind: address already in use» уже внутри горутины.
+//
+// Проверка пары «редирект — основной адрес» вызывается отдельно: её текст описывает именно эту
+// пару, и на него опирается спецификация https-server-startup.
+func listenConflicts() error {
+	listeners := []secure.ListenAddr{
+		{
+			Role:    "адрес основного HTTP-слушателя",
+			Setting: "-a/SERVER_ADDRESS/server_address",
+			Addr:    config.Addr,
+		},
+		{
+			Role:    "адрес gRPC-слушателя",
+			Setting: "-grpc-addr/GRPC_ADDRESS/grpc_address",
+			Addr:    config.GRPCAddr,
+		},
+	}
+
+	if !config.EnableHTTPS {
+		return secure.AddrConflictAll(listeners...)
+	}
+
+	if err := secure.AddrConflict(config.Addr, config.HTTPRedirectAddr); err != nil {
 		return err
 	}
 
-	// Материал TLS берётся из -cert-file/-key-file (cert.pem/key.pem): готовая пара
-	// переиспользуется байт в байт, битая или истёкшая перевыпускается на месте.
-	material, err := secure.LoadOrGenerate(config.CertFile, config.KeyFile)
-	if err != nil {
-		return fmt.Errorf("материалы TLS не готовы: %w", err)
+	listeners = append(listeners, secure.ListenAddr{
+		Role:    "адрес редиректа",
+		Setting: "-http-addr/HTTP_SERVER_ADDRESS/http_server_address",
+		Addr:    config.HTTPRedirectAddr,
+	})
+
+	return secure.AddrConflictAll(listeners...)
+}
+
+// grpcListener возвращает запуск gRPC-слушателя либо nil, когда gRPC в запуске не участвует.
+// Адрес открывается здесь же: ошибка bind приходит в waitStop той же причиной, что отказ
+// HTTP-слушателя, и завершает процесс ненулевым кодом.
+func grpcListener(plan stopPlan) listener {
+	if plan.grpcServer == nil {
+		return nil
 	}
 
-	// Сертификат кладём прямо в конфигурацию сервера: пути файлов в ListenAndServeTLS
-	// ниже не передаются.
-	server.TLSConfig = material.ServerTLS()
+	return func() error {
+		lis, err := net.Listen("tcp", config.GRPCAddr)
+		if err != nil {
+			return fmt.Errorf("gRPC %s: %w", config.GRPCAddr, err)
+		}
 
-	// Второй слушатель ничего не обслуживает сам — только редирект на основной адрес.
-	redirect := &http.Server{
-		Addr:              config.HTTPRedirectAddr,
-		Handler:           secure.RedirectHandler(config.Addr),
-		ReadHeaderTimeout: listenTimeout,
+		logrus.Info("Запуск gRPC-сервера на ", config.GRPCAddr)
+
+		return plan.grpcServer.Serve(lis)
+	}
+}
+
+// stopGRPC отпускает gRPC-сервер: начатые вызовы дозавершаются, новые получают UNAVAILABLE.
+// У GracefulStop нет параметра контекста, поэтому срок держит awaitDone: по истечении
+// сервер обрывается принудительно, а причина возвращается ошибкой — зависший вызов не должен
+// держать процесс дольше периода остановки.
+func stopGRPC(ctx context.Context, server *grpc.Server) error {
+	if err := awaitDone(ctx, server.GracefulStop, server.Stop); err != nil {
+		return fmt.Errorf("ожидание начатых вызовов: %w", err)
 	}
 
-	logrus.Info("Запуск HTTPS-сервера на ", config.Addr)
-	logrus.Info("Запуск HTTP-редиректора на ", config.HTTPRedirectAddr)
-
-	// Редирект останавливается раньше основного сервера, поэтому он первым и в списке
-	// слушателей, и в списке запуска.
-	return waitStop(
-		ctx,
-		[]*http.Server{redirect, server},
-		[]listener{redirect.ListenAndServe, func() error { return server.ListenAndServeTLS("", "") }},
-		plan,
-	)
+	return nil
 }
 
 // waitStop поднимает все слушатели и ждёт первую причину остановиться: отказ одного из них
@@ -270,9 +382,17 @@ func shutdown(servers []*http.Server, plan stopPlan) error {
 		}
 	}
 
+	// gRPC отпускается в группе слушателей, а не позже: начатый вызов обязан застать открытую
+	// базу и открытый файл аудита, иначе его дозавершение стало бы ошибкой записи.
+	if plan.grpcServer != nil {
+		if err := stopGRPC(ctx, plan.grpcServer); err != nil {
+			errs = append(errs, fmt.Errorf("gRPC: %w", err))
+		}
+	}
+
 	// Фоновые удаления пишут в хранилище и базу, поэтому их ждут до закрытия приёмников.
 	if plan.deletes != nil {
-		if err := waitGroup(ctx, plan.deletes); err != nil {
+		if err := awaitDone(ctx, plan.deletes.Wait, nil); err != nil {
 			errs = append(errs, fmt.Errorf("фоновые удаления: %w", err))
 		}
 	}
@@ -300,20 +420,26 @@ func shutdown(servers []*http.Server, plan stopPlan) error {
 	return errors.Join(errs...)
 }
 
-// waitGroup ждёт завершения группы не дольше ctx: зависшая фоновая задача не должна держать
-// процесс дольше одного периода до timeout на остановку.
-func waitGroup(ctx context.Context, wg *sync.WaitGroup) error {
+// awaitDone ждёт завершения wait не дольше ctx — период остановки общий для всех фаз, и
+// зависшая задача не должна держать процесс дольше него. По истечении срока вызывается stop:
+// у фазы может быть свой способ прерваться принудительно (как Stop у gRPC-сервера). Причиной
+// остаётся истечение ожидания.
+func awaitDone(ctx context.Context, wait, stop func()) error {
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		wg.Wait()
+		wait()
 	}()
 
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		if stop != nil {
+			stop()
+		}
+
 		return ctx.Err()
 	}
 }
