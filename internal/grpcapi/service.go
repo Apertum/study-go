@@ -9,7 +9,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	shortenerv1 "study-go.ru/cho/eto/api/shortener/v1"
-	"study-go.ru/cho/eto/internal/authn"
 	"study-go.ru/cho/eto/internal/shorten"
 )
 
@@ -23,17 +22,13 @@ type ShortenerService struct {
 	shortenerv1.UnimplementedShortenerServiceServer
 
 	service *shorten.Service
-	users   authn.UserStore
-	key     string
 }
 
 var _ shortenerv1.ShortenerServiceServer = (*ShortenerService)(nil)
 
-// New собирает сервис: service — операции предметной области, users — проверка существования
-// пользователя, key — тот же cookie_key, которым подписывается значение куки, выдаваемой
-// POST /login.
-func New(service *shorten.Service, users authn.UserStore, key string) *ShortenerService {
-	return &ShortenerService{service: service, users: users, key: key}
+// New собирает сервис: service — операции предметной области.
+func New(service *shorten.Service) *ShortenerService {
+	return &ShortenerService{service: service}
 }
 
 // getID извлекает идентификатор пользователя из контекста, установленного перехватчиком Auth.

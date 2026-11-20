@@ -181,7 +181,7 @@ func startServer(t *testing.T, svc *shorten.Service, users authn.UserStore) shor
 		UnaryRecover(),
 		Auth(testKey, users),
 	))
-	shortenerv1.RegisterShortenerServiceServer(server, New(svc, users, testKey))
+	shortenerv1.RegisterShortenerServiceServer(server, New(svc))
 
 	go func() { _ = server.Serve(listener) }()
 

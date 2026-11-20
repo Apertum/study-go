@@ -159,8 +159,6 @@ func main() {
 			Audit:   central,
 			BaseURL: config.BaseURL,
 		},
-		authn.PostgresUsers{DB: db},
-		config.CookieKey,
 	))
 
 	plan := stopPlan{

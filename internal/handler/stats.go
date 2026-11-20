@@ -82,7 +82,7 @@ func StatsFromDB(db *sql.DB) StatsReader {
 }
 
 // StatsFromDBWithTX создаёт источник счётчиков в виде единой транзакции. Оба запроса выполняются
-// внутри READ COMMITTED-транзакции с отдельным соединением из пула, поэтому снимок
+// внутри REPEATABLE READ-транзакции с отдельным соединением из пула, поэтому снимок
 // гарантирует согласованность счётчиков между таблицами usr и url_srv.
 func StatsFromDBWithTX(db *sql.DB) StatsTX {
 	if db == nil {
@@ -94,9 +94,9 @@ func StatsFromDBWithTX(db *sql.DB) StatsTX {
 
 type statsTX struct{ db *sql.DB }
 
-// Exec открывает транзакцию READ COMMITTED, читает оба счётчика и фиксирует транзакцию.
+// Exec открывает транзакцию REPEATABLE READ, читает оба счётчика и фиксирует транзакцию.
 func (tx statsTX) Exec(ctx context.Context) (urls, users int64, err error) {
-	txn, err := tx.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	txn, err := tx.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return 0, 0, err
 	}

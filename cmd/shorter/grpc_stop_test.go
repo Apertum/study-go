@@ -61,7 +61,7 @@ func startHangServer(t *testing.T, store *hangStore) hangServer {
 		grpcapi.UnaryRecover(),
 		grpcapi.Auth("key", nil),
 	))
-	shortenerv1.RegisterShortenerServiceServer(server, grpcapi.New(&shorten.Service{Store: store}, nil, "key"))
+	shortenerv1.RegisterShortenerServiceServer(server, grpcapi.New(&shorten.Service{Store: store}))
 
 	go func() { _ = server.Serve(listener) }()
 
